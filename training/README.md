@@ -122,6 +122,8 @@ Point every run at the **team tracking server** (replace with your URI):
 export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
 ```
 
+**Metrics in the UI:** Runs use **`log_system_metrics=True`**, so MLflow records **System metrics** (names like `system/cpu_utilization_percentage`) in the **System metrics** tab. **Model metrics** (loss, learning rate, IoU, epoch time, etc.) come from `mlflow.log_metric` and appear under **Model metrics**. On **ROCm**, install **`pyrsmi`** (listed in `requirements.txt` on Linux) so GPU stats show in System metrics; otherwise you may only see CPU/RAM/disk there. If a run **stops before the first training log** (e.g. crash on batch 0), you may only see system samples and no loss curves yet.
+
 ---
 
 ## 2. Change configuration

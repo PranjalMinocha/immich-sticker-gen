@@ -9,13 +9,13 @@ Weight loading: training.use_pretrained + training.pretrained_checkpoint_path on
 Student TinyViT in encoder_distill is always random-init unless extended elsewhere.
 
 Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
-System metrics (CPU/RAM/disk, optional GPU util) logged each epoch when psutil is installed.
+System metrics (CPU/RAM/disk/GPU) use MLflow's collector (see start_run(log_system_metrics=True));
+install **pyrsmi** on AMD/ROCm so GPU appears in the System metrics tab.
 """
 from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -49,68 +49,6 @@ from training_core import (
     _repo_root,
     _resolve_mobilesam_root,
 )
-
-try:
-    import psutil
-except ImportError:
-    psutil = None
-
-
-def snapshot_system_metrics() -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    if psutil is None:
-        return out
-    out["sys_cpu_percent"] = float(psutil.cpu_percent(interval=None))
-    vm = psutil.virtual_memory()
-    out["sys_ram_used_bytes"] = float(vm.used)
-    out["sys_ram_percent"] = float(vm.percent)
-    try:
-        du = psutil.disk_usage("/")
-        out["sys_disk_used_percent"] = float(du.percent)
-    except OSError:
-        pass
-    return out
-
-
-def try_rocm_gpu_util() -> Optional[float]:
-    try:
-        r = subprocess.run(
-            ["rocm-smi", "--showuse"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if r.returncode != 0:
-            return None
-        for line in r.stdout.splitlines():
-            if "GPU use" in line or "GPU Utilization" in line:
-                parts = line.replace("%", " ").split()
-                for i, p in enumerate(parts):
-                    if p.isdigit() and i > 0:
-                        return float(p)
-        return None
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-        return None
-
-
-def log_system_metrics_mlflow(step: int, device: torch.device) -> None:
-    for k, v in snapshot_system_metrics().items():
-        mlflow.log_metric(k, v, step=step)
-    if device.type == "cuda":
-        mlflow.log_metric(
-            "gpu_mem_allocated_bytes",
-            float(torch.cuda.memory_allocated(device)),
-            step=step,
-        )
-        mlflow.log_metric(
-            "gpu_mem_reserved_bytes",
-            float(torch.cuda.memory_reserved(device)),
-            step=step,
-        )
-    gu = try_rocm_gpu_util()
-    if gu is not None:
-        mlflow.log_metric("gpu_util_percent_rocm_smi", gu, step=step)
-
 
 def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
     """
@@ -344,7 +282,7 @@ def train_sam_epochs(
             nb += 1
             global_step += 1
 
-            if (batch_idx + 1) % log_iv == 0:
+            if batch_idx == 0 or (batch_idx + 1) % log_iv == 0:
                 mlflow.log_metric("sam_train_loss_batch", loss_reduced.item(), step=global_step)
 
             if show_tqdm:
@@ -352,11 +290,11 @@ def train_sam_epochs(
 
         if scheduler is not None:
             scheduler.step()
+            mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=ep)
 
         epoch_time = time.perf_counter() - t0
         mlflow.log_metric("sam_train_loss_epoch", epoch_loss / max(nb, 1), step=ep)
         mlflow.log_metric("sam_epoch_time_sec", epoch_time, step=ep)
-        log_system_metrics_mlflow(ep, device)
         if val_loader is not None:
             viou = eval_sam_loader_mean_iou(sam, val_loader, device, multimask_output)
             mlflow.log_metric("val_mean_iou_lowres", viou, step=ep)
@@ -505,7 +443,7 @@ def run_encoder_distill(
 
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
-    mlflow.start_run(run_name=run_name)
+    mlflow.start_run(run_name=run_name, log_system_metrics=True)
     for k, v in flat_params.items():
         mlflow.log_param(k, v)
     mlflow.log_param("config_path", str(cfg_path))
@@ -520,7 +458,6 @@ def run_encoder_distill(
         mlflow.log_param(f"env_{k}", v)
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
-    log_system_metrics_mlflow(0, device)
 
     try:
         epoch_bar = tqdm(
@@ -556,7 +493,7 @@ def run_encoder_distill(
                 if torch.cuda.is_available():
                     peak_mem = max(peak_mem, torch.cuda.max_memory_allocated(device))
 
-                if (batch_idx + 1) % log_interval == 0:
+                if batch_idx == 0 or (batch_idx + 1) % log_interval == 0:
                     mlflow.log_metric(
                         "train_loss_batch",
                         loss_reduced.item(),
@@ -572,7 +509,6 @@ def run_encoder_distill(
             mlflow.log_metric("train_loss_epoch", train_loss_epoch, step=epoch)
             mlflow.log_metric("epoch_time_sec", epoch_time, step=epoch)
             mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=epoch)
-            log_system_metrics_mlflow(epoch, device)
 
             val_metrics = evaluate_encoder(
                 model,
@@ -737,7 +673,7 @@ def run_full_sam(
 
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
-    mlflow.start_run(run_name=run_name)
+    mlflow.start_run(run_name=run_name, log_system_metrics=True)
     for k, v in flat_params.items():
         mlflow.log_param(k, v)
     mlflow.log_param("config_path", str(cfg_path))
@@ -751,7 +687,6 @@ def run_full_sam(
         mlflow.log_param(f"env_{k}", v)
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
-    log_system_metrics_mlflow(0, device)
 
     try:
         train_sam_epochs(
