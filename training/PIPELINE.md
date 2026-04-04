@@ -61,7 +61,7 @@ flowchart TB
 
 **Container** — Image from **`training/Dockerfile`**: Ubuntu, ROCm PyTorch, Python deps. Typical mounts: data at **`/data`**, MobileSAM package at **`/mobilesam`**, writable output (e.g. **`/out`**) for configs and checkpoints.
 
-**Training modes** — **`train.py`**. Knobs: **`training.mode`**, **`training.use_pretrained`**, **`training.pretrained_checkpoint_path`** (legacy `model.*`). **`encoder_distill`**: TinyViT vs **`.npy`**, merge, log **`mobile_sam_full.pt`**. **`full_sam`**: mask supervision. **Distill → segment**: second run’s **`pretrained_checkpoint_path`** = first **`mobile_sam_full.pt`**.
+**Training modes** — **`train.py`**. Knobs: **`training.mode`**, **`training.use_pretrained`**, **`training.pretrained_checkpoint_path`**. **`encoder_distill`**: TinyViT vs **`.npy`**, merge, log **`mobile_sam_full.pt`**. **`full_sam`**: mask supervision. **Distill → segment**: second run’s path = first **`mobile_sam_full.pt`**.
 
 **Validation previews** — **`full_sam`:** **`val_previews/epoch_XXXX/`**. **`encoder_distill`** + **`data.annotation_root`:** **`val_previews_merged_sam/epoch_XXXX/`**. **`train.val_preview_samples`** (default **3**; **0** off).
 

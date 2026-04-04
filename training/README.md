@@ -30,11 +30,9 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 |-----|--------|------|
 | **`training.mode`** | `encoder_distill` \| `full_sam` | **Encoder path:** distill TinyViT vs teacher `.npy`, merge into a SAM scaffold. **Full path:** train all SAM components on mask loss. |
 | **`training.use_pretrained`** | `true` (default) \| `false` | **`true`:** load **`training.pretrained_checkpoint_path`** (official MobileSAM, your `mobile_sam_full.pt`, etc.). **`false`:** random-init MobileSAM scaffold (no `.pt`). |
-| **`training.pretrained_checkpoint_path`** | filesystem path | Required when **`use_pretrained: true`**. Ignored when **`false`**. |
+| **`training.pretrained_checkpoint_path`** | filesystem path | Required when **`use_pretrained: true`**. Omit or ignore when **`false`**. |
 
-**Legacy (still supported):** `model.load_pretrained`, `model.mobile_sam_checkpoint`, or `model.pretrained_checkpoint_path` under **`model:`** — prefer **`training.*`** for new configs.
-
-**Student TinyViT** in **`encoder_distill`** is always **randomly initialized** in the current code; there is no separate “load pretrained TinyViT” flag yet. **`use_pretrained`** only controls the **SAM checkpoint** used for merge / full-model init.
+**Student TinyViT** in **`encoder_distill`** is always **randomly initialized**; **`use_pretrained`** only controls the **SAM `.pt`** used for merge / full-model init.
 
 | `training.mode` | What it does | MLflow artifact |
 |-----------------|--------------|-----------------|
@@ -45,7 +43,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 **`full_sam` validation previews:** after each epoch’s val IoU, rank 0 logs **`train.val_preview_samples`** (default **3**) PNGs to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
 
-**`encoder_distill` merged-SAM previews (option B):** if **`data.annotation_root`** is set and **`train.val_preview_samples` > 0**, after each encoder validation rank 0 **merges the current TinyViT** into the resolved pretrained scaffold (or scratch SAM), runs box+mask viz on val, logs **`val_previews_merged_sam/epoch_XXXX/`**.
+**`encoder_distill` merged-SAM previews:** with **`data.annotation_root`** and **`train.val_preview_samples` > 0**, after val metrics rank 0 merges TinyViT into the SAM scaffold, logs **`val_previews_merged_sam/epoch_XXXX/`**.
 
 ---
 

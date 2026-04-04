@@ -71,7 +71,7 @@ else
   echo "Note: no ${TGZ} — place images under ${EXTRACT_DIR} or adjust paths in YAML."
 fi
 
-# Optional: FUSE mount whole bucket (browsing / legacy). Training should use LOCAL_DATA_ROOT for I/O.
+# Optional: FUSE mount whole bucket (browsing). Training should use LOCAL_DATA_ROOT for I/O.
 case "${RCLONE_ENABLE_MOUNT:-0}" in
   1|true|yes|YES) RCLONE_DO_MOUNT=1 ;;
   *) RCLONE_DO_MOUNT=0 ;;
