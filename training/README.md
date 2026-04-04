@@ -2,7 +2,7 @@
 
 The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + pretrained prompt/mask decoder weights) for MLflow. **`training.mode: full_sam`** fine-tunes the full model with mask supervision. **Distill then segment** = two runs: `encoder_distill` first, then `full_sam` with `model.mobile_sam_checkpoint` set to the first run’s `mobile_sam_full.pt`. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. Shared helpers live in [`training_core.py`](training_core.py).
 
-**Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, `split_teacher` vs colocated, tarball extract).
+**Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, `split_teacher` vs colocated, tarball extract). **End-to-end pipeline diagram:** **[`PIPELINE.md`](PIPELINE.md)**.
 
 ## Layout
 
@@ -12,6 +12,8 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 | [`training_core.py`](training_core.py) | Distributed setup, flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
 | [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, colocated / `split_teacher` pairs, optional mask JSON for SAM modes |
+| [`DATA.md`](DATA.md) | Object storage sync, layouts, tar extract |
+| [`PIPELINE.md`](PIPELINE.md) | Mermaid flowchart + pipeline summary |
 | [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`model.mobile_sam_checkpoint` required) |
 | [`configs/tinyvit_local_sa1b.yaml`](configs/tinyvit_local_sa1b.yaml) | Local smoke-test paths |
 | [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision (use after distill by pointing `mobile_sam_checkpoint` at prior `mobile_sam_full.pt`) |
@@ -30,6 +32,8 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 | `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON. Set `model.mobile_sam_checkpoint` to official `mobile_sam.pt` or to **`mobile_sam_full.pt` from a prior encoder run** | `checkpoints/mobile_sam_full.pt` |
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
+
+**`full_sam` validation previews:** after each epoch’s val IoU, rank 0 logs **`train.val_preview_samples`** (default **3**) PNGs to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
 
 ---
 

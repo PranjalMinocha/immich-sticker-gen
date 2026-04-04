@@ -18,7 +18,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import cv2
 import mlflow
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -151,6 +153,105 @@ def eval_sam_loader_mean_iou(
     return tot / max(n, 1)
 
 
+def _collect_val_samples(loader: DataLoader, n: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for batch in loader:
+        for b in batch:
+            out.append(b)
+            if len(out) >= n:
+                return out
+    return out
+
+
+@torch.no_grad()
+def log_sam_val_preview_artifacts(
+    sam: nn.Module,
+    val_loader: DataLoader,
+    device: torch.device,
+    epoch: int,
+    multimask_output: bool,
+    num_samples: int,
+    staging_dir: Path,
+) -> None:
+    """
+    Save validation images with box prompt, predicted mask overlay, and GT contour; log to MLflow.
+    Prompt matches training: axis-aligned box from GT mask (see SA1BSamDataset).
+    """
+    if num_samples <= 0:
+        return
+    ar = mlflow.active_run()
+    if ar is None:
+        return
+
+    sam.eval()
+    samples = _collect_val_samples(val_loader, num_samples)
+    if not samples:
+        return
+
+    ep_tag = f"epoch_{epoch:04d}"
+    art_prefix = f"val_previews/{ep_tag}"
+    stage = staging_dir / "mlflow_val_previews" / ep_tag
+    stage.mkdir(parents=True, exist_ok=True)
+
+    for i, rec in enumerate(samples[:num_samples]):
+        img_t = rec["image"]
+        box_t = rec["boxes"]
+        gt_t = rec["low_res_mask_gt"]
+        path_str = str(rec.get("path", f"sample_{i}"))
+        stem = Path(path_str).stem
+
+        one = [
+            {
+                "image": img_t.to(device, non_blocking=True),
+                "original_size": rec["original_size"],
+                "boxes": box_t.to(device, non_blocking=True),
+                "low_res_mask_gt": gt_t.to(device, non_blocking=True),
+            }
+        ]
+        logits, _ = forward_sam_trainable(sam, one, multimask_output, device)
+        pred_lr = torch.sigmoid(logits[0, 0]).float().cpu().numpy()
+        gt_lr = gt_t[0, 0].float().cpu().numpy()
+
+        img = img_t.permute(1, 2, 0).cpu().numpy()
+        img_u8 = np.clip(img, 0.0, 255.0).astype(np.uint8)
+        h, w = img_u8.shape[:2]
+
+        pred_up = cv2.resize(pred_lr, (w, h), interpolation=cv2.INTER_LINEAR)
+        gt_up = cv2.resize(gt_lr, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # BGR for cv2 drawing / imwrite
+        vis = cv2.cvtColor(img_u8, cv2.COLOR_RGB2BGR).astype(np.float32)
+        pred_mask = (pred_up > 0.5).astype(np.float32)
+        green = np.zeros_like(vis)
+        green[:, :, 1] = pred_mask * 255.0
+        vis = cv2.addWeighted(vis, 0.62, green, 0.38, 0)
+        vis = np.clip(vis, 0, 255).astype(np.uint8)
+
+        gt_bin = (gt_up > 0.5).astype(np.uint8) * 255
+        cnts, _ = cv2.findContours(gt_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, cnts, -1, (0, 0, 255), thickness=2)
+
+        bx = box_t[0, 0].cpu().numpy()
+        x0, y0, x1, y1 = int(bx[0]), int(bx[1]), int(bx[2]), int(bx[3])
+        cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 180, 255), 2)
+
+        caption = f"{stem} | prompt: box [{x0},{y0},{x1},{y1}] (xyxy, resized)"
+        cv2.putText(
+            vis,
+            caption[:120],
+            (4, min(24, h - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        out_path = stage / f"sample_{i:02d}_{stem}.png"
+        cv2.imwrite(str(out_path), vis)
+        mlflow.log_artifact(str(out_path), artifact_path=art_prefix)
+
+
 def train_sam_epochs(
     sam: nn.Module,
     train_loader: DataLoader,
@@ -165,14 +266,15 @@ def train_sam_epochs(
     multimask_output: bool,
     epoch_offset: int = 0,
     train_sampler: Optional[DistributedSampler] = None,
+    staging_dir: Optional[Path] = None,
 ) -> None:
     show_tqdm = is_master and train_cfg.get("show_progress", True)
     log_iv = int(train_cfg.get("log_interval_batches", 50))
-    sam.train()
     global_step = epoch_offset * max(len(train_loader), 1)
 
     for epoch in range(1, epochs + 1):
         ep = epoch_offset + epoch
+        sam.train()
         if train_sampler is not None:
             train_sampler.set_epoch(ep)
         epoch_loss = 0.0
@@ -219,6 +321,17 @@ def train_sam_epochs(
             if val_loader is not None:
                 viou = eval_sam_loader_mean_iou(sam, val_loader, device, multimask_output)
                 mlflow.log_metric("val_mean_iou_lowres", viou, step=ep)
+                n_prev = int(train_cfg.get("val_preview_samples", 3))
+                if n_prev > 0 and staging_dir is not None:
+                    log_sam_val_preview_artifacts(
+                        sam,
+                        val_loader,
+                        device,
+                        ep,
+                        multimask_output,
+                        n_prev,
+                        staging_dir,
+                    )
 
         if world_size > 1:
             dist.barrier()
@@ -664,6 +777,7 @@ def run_full_sam(
             multimask,
             epoch_offset=0,
             train_sampler=train_sampler,
+            staging_dir=output_dir if is_master else None,
         )
         if world_size > 1:
             dist.barrier()

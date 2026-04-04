@@ -35,6 +35,8 @@ train:
   log_interval_batches: 20
   show_progress: true
   distributed_backend: nccl
+  # MLflow PNGs per val epoch: box prompt + pred mask + GT contour (0 = off)
+  val_preview_samples: 3
 
 mlflow:
   tracking_uri: http://127.0.0.1:5000
