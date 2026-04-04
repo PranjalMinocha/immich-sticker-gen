@@ -1,0 +1,11 @@
+# Triton server with Python backend dependencies for MobileSAM
+FROM nvcr.io/nvidia/tritonserver:24.05-py3
+
+RUN pip install --no-cache-dir \
+    onnxruntime==1.18.0 \
+    opencv-python-headless==4.9.0.80 \
+    Pillow==10.3.0 \
+    numpy==1.26.4
+
+# Models are mounted at /models at runtime (bind mount in docker-compose)
+CMD ["tritonserver", "--model-repository=/models"]

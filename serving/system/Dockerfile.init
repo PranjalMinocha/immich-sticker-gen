@@ -1,0 +1,22 @@
+FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    git+https://github.com/ChaoningZhang/MobileSAM.git \
+    onnx==1.16.0 \
+    opencv-python-headless==4.9.0.80 \
+    Pillow==10.3.0 \
+    numpy==1.26.4 \
+    requests==2.31.0 \
+    pycocotools==2.0.7 \
+    timm==0.9.16
+
+COPY system/export_onnx.py  /app/export_onnx.py
+COPY model/download_data.py  /app/download_data.py
+
+CMD ["sh", "-c", "python /app/download_data.py && python /app/export_onnx.py"]
