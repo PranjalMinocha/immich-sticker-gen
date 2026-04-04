@@ -29,11 +29,15 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 | Mode | What it does | MLflow artifact |
 |------|----------------|-----------------|
 | `encoder_distill` | Train TinyViT vs teacher `.npy`; merge into full SAM using `model.mobile_sam_checkpoint` | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
-| `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON. Set `model.mobile_sam_checkpoint` to official `mobile_sam.pt` or to **`mobile_sam_full.pt` from a prior encoder run** | `checkpoints/mobile_sam_full.pt` |
+| `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON. **`model.load_pretrained`**: load **`model.mobile_sam_checkpoint`** (default) or **`false`** for train-from-scratch | `checkpoints/mobile_sam_full.pt` |
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
 **`full_sam` validation previews:** after each epoch’s val IoU, rank 0 logs **`train.val_preview_samples`** (default **3**) PNGs to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
+
+**`encoder_distill` merged-SAM previews (option B):** if **`data.annotation_root`** is set (mask JSON) and **`train.val_preview_samples` > 0**, after each encoder validation rank 0 **merges the current TinyViT** into **`model.mobile_sam_checkpoint`**, runs the same box+mask visualization on the val split, and logs under **`val_previews_merged_sam/epoch_XXXX/`**. Requires the same annotations as `full_sam` for those val images.
+
+**`full_sam` initialization:** **`model.load_pretrained`** (default **`true`**) loads **`model.mobile_sam_checkpoint`**. Set **`load_pretrained: false`** to train from **random initialization** (leave **`mobile_sam_checkpoint`** unset or ignored).
 
 ---
 

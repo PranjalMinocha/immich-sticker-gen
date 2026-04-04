@@ -5,6 +5,8 @@ Config key: training.mode = encoder_distill | full_sam
 
 Two-stage (distill then segment): run encoder_distill, then full_sam with model.mobile_sam_checkpoint
 set to the first run's mobile_sam_full.pt (MLflow artifact or local path).
+full_sam: model.load_pretrained + model.mobile_sam_checkpoint, or load_pretrained false for scratch init.
+encoder_distill: optional val mask previews (merged SAM) when data.annotation_root is set.
 
 Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
 System metrics (CPU/RAM/disk, optional GPU util) logged each epoch when psutil is installed.
@@ -172,6 +174,7 @@ def log_sam_val_preview_artifacts(
     multimask_output: bool,
     num_samples: int,
     staging_dir: Path,
+    preview_artifact_prefix: str = "val_previews",
 ) -> None:
     """
     Save validation images with box prompt, predicted mask overlay, and GT contour; log to MLflow.
@@ -189,8 +192,9 @@ def log_sam_val_preview_artifacts(
         return
 
     ep_tag = f"epoch_{epoch:04d}"
-    art_prefix = f"val_previews/{ep_tag}"
-    stage = staging_dir / "mlflow_val_previews" / ep_tag
+    safe_stem = preview_artifact_prefix.strip("/").replace("/", "_")
+    art_prefix = f"{preview_artifact_prefix}/{ep_tag}"
+    stage = staging_dir / "mlflow_val_previews" / safe_stem / ep_tag
     stage.mkdir(parents=True, exist_ok=True)
 
     for i, rec in enumerate(samples[:num_samples]):
@@ -250,6 +254,42 @@ def log_sam_val_preview_artifacts(
         out_path = stage / f"sample_{i:02d}_{stem}.png"
         cv2.imwrite(str(out_path), vis)
         mlflow.log_artifact(str(out_path), artifact_path=art_prefix)
+
+
+@torch.no_grad()
+def log_encoder_merged_sam_val_previews(
+    student: nn.Module,
+    mobilesam_root: Path,
+    base_sam_checkpoint: str,
+    sam_val_loader: DataLoader,
+    device: torch.device,
+    epoch: int,
+    multimask_output: bool,
+    num_samples: int,
+    staging_dir: Path,
+) -> None:
+    """
+    Merge current TinyViT into a base MobileSAM checkpoint and log mask previews (encoder_distill val).
+    """
+    if num_samples <= 0 or mlflow.active_run() is None:
+        return
+    st = student.module.state_dict() if isinstance(student, DDP) else student.state_dict()
+    enc_state = strip_module_prefix(st)
+    sam = build_sam_tiny(mobilesam_root, base_sam_checkpoint, device)
+    merge_tinyvit_encoder_into_sam(sam, enc_state, strict=False)
+    try:
+        log_sam_val_preview_artifacts(
+            sam,
+            sam_val_loader,
+            device,
+            epoch,
+            multimask_output,
+            num_samples,
+            staging_dir,
+            preview_artifact_prefix="val_previews_merged_sam",
+        )
+    finally:
+        del sam
 
 
 def train_sam_epochs(
@@ -331,6 +371,7 @@ def train_sam_epochs(
                         multimask_output,
                         n_prev,
                         staging_dir,
+                        preview_artifact_prefix="val_previews",
                     )
 
         if world_size > 1:
@@ -405,6 +446,28 @@ def run_encoder_distill(
         num_workers=num_workers,
         pin_memory=pin,
     )
+
+    n_prev_enc = int(train_cfg.get("val_preview_samples", 3))
+    sam_ckpt_enc = cfg.get("model", {}).get("mobile_sam_checkpoint")
+    multimask_enc = bool(cfg.get("sam", {}).get("multimask_output", False))
+    sam_enc_val_loader: Optional[DataLoader] = None
+    if (
+        is_master
+        and n_prev_enc > 0
+        and data_cfg.get("annotation_root")
+        and sam_ckpt_enc
+        and len(jpg_splits["val"]) > 0
+    ):
+        pv_ds = SA1BSamDataset(jpg_splits["val"], data_cfg)
+        bs_pv = min(4, max(len(pv_ds), 1))
+        sam_enc_val_loader = DataLoader(
+            pv_ds,
+            batch_size=bs_pv,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=_sam_collate,
+            pin_memory=pin,
+        )
 
     TinyViT = _import_tiny_vit(mobilesam_root)
     model_cfg = cfg["model"]
@@ -567,6 +630,18 @@ def run_encoder_distill(
                 mlflow.log_metric(
                     "val_cosine_similarity", val_metrics["cosine_similarity"], step=epoch
                 )
+                if sam_enc_val_loader is not None:
+                    log_encoder_merged_sam_val_previews(
+                        model,
+                        mobilesam_root,
+                        str(sam_ckpt_enc),
+                        sam_enc_val_loader,
+                        device,
+                        epoch,
+                        multimask_enc,
+                        n_prev_enc,
+                        output_dir,
+                    )
             if world_size > 1:
                 dist.barrier()
 
@@ -708,8 +783,19 @@ def run_full_sam(
         pin_memory=torch.cuda.is_available(),
     )
 
-    sam_ckpt = cfg.get("model", {}).get("mobile_sam_checkpoint")
-    sam = build_sam_tiny(mobilesam_root, sam_ckpt, device)
+    model_cfg = cfg.get("model", {})
+    load_pretrained = bool(model_cfg.get("load_pretrained", True))
+    sam_ckpt_raw = model_cfg.get("mobile_sam_checkpoint")
+    if load_pretrained:
+        if not sam_ckpt_raw:
+            raise ValueError(
+                "full_sam requires model.mobile_sam_checkpoint when model.load_pretrained is true (default)."
+            )
+        sam_ckpt_resolved: Optional[str] = str(sam_ckpt_raw)
+    else:
+        sam_ckpt_resolved = None
+
+    sam = build_sam_tiny(mobilesam_root, sam_ckpt_resolved, device)
     if world_size > 1 and torch.cuda.is_available():
         try:
             sam = nn.SyncBatchNorm.convert_sync_batchnorm(sam)

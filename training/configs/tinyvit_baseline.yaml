@@ -24,7 +24,7 @@ data:
   # Set to an existing JSON manifest to freeze splits across runs; otherwise written to output.dir
   split_manifest: null
   num_workers: 4
-  # Optional: SA-1B-style JSON masks (COCO RLE) for test IoU after encoder run
+  # Optional: mask JSON for (1) test IoU after encoder run (2) merged-SAM val previews each epoch
   # annotation_root: /data/annotations
 
 sam:
@@ -61,6 +61,8 @@ train:
   show_progress: true
   # nccl often works on ROCm (RCCL); use gloo if you hit backend errors on AMD.
   distributed_backend: nccl
+  # With data.annotation_root set: log merged-SAM mask previews each val epoch (0 = off)
+  val_preview_samples: 3
 
 mlflow:
   tracking_uri: http://129.114.27.248:8000
