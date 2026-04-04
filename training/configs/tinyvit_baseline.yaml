@@ -31,7 +31,9 @@ sam:
   multimask_output: false
 
 model:
-  # Required for encoder_distill / exports: MobileSAM .pt (prompt + decoder); merge trained TinyViT in.
+  # load_pretrained true (default): mobile_sam_checkpoint required for merge/export.
+  # load_pretrained false: random-init prompt+decoder+encoder scaffold; merge trained TinyViT in.
+  load_pretrained: true
   mobile_sam_checkpoint: /path/to/mobile_sam.pt
   img_size: 1024
   in_chans: 3

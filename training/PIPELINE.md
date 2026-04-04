@@ -65,6 +65,6 @@ flowchart TB
 
 **Validation previews** — **`full_sam`:** after val IoU, **`val_previews/epoch_XXXX/`**. **`encoder_distill`:** if **`data.annotation_root`** is set, merged TinyViT + base checkpoint → **`val_previews_merged_sam/epoch_XXXX/`**. Controlled by **`train.val_preview_samples`** (default **3**; **0** disables).
 
-**`full_sam` weights** — **`model.load_pretrained`** (default **true**) + **`model.mobile_sam_checkpoint`** path; **`load_pretrained: false`** trains the full SAM stack from scratch (random init).
+**SAM weights** — **`model.load_pretrained`** (default **true**) + **`model.mobile_sam_checkpoint`**. **`load_pretrained: false`**: **`full_sam`** trains entire SAM from scratch; **`encoder_distill`** still trains TinyViT from scratch but merges into a **random-init** SAM for export (weaker baselines than loading official `mobile_sam.pt`).
 
 **MLflow** — Tracking URI from environment or YAML; flattened params, metrics, optional test IoU, timing, **psutil** / optional **rocm-smi** system metrics.

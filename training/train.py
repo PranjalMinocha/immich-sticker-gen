@@ -6,7 +6,7 @@ Config key: training.mode = encoder_distill | full_sam
 Two-stage (distill then segment): run encoder_distill, then full_sam with model.mobile_sam_checkpoint
 set to the first run's mobile_sam_full.pt (MLflow artifact or local path).
 full_sam: model.load_pretrained + model.mobile_sam_checkpoint, or load_pretrained false for scratch init.
-encoder_distill: optional val mask previews (merged SAM) when data.annotation_root is set.
+encoder_distill: optional val mask previews when data.annotation_root is set; model.load_pretrained false merges into random-init SAM scaffold.
 
 Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
 System metrics (CPU/RAM/disk, optional GPU util) logged each epoch when psutil is installed.
@@ -116,6 +116,22 @@ def log_system_metrics_mlflow(step: int, device: torch.device) -> None:
     gu = try_rocm_gpu_util()
     if gu is not None:
         mlflow.log_metric("gpu_util_percent_rocm_smi", gu, step=step)
+
+
+def resolve_model_sam_checkpoint(model_cfg: dict) -> Optional[str]:
+    """
+    Path to load MobileSAM .pt, or None for random-init scaffold (encoder_distill merge + full_sam).
+    When load_pretrained is true (default), mobile_sam_checkpoint must be set.
+    """
+    load_pretrained = bool(model_cfg.get("load_pretrained", True))
+    raw = model_cfg.get("mobile_sam_checkpoint")
+    if load_pretrained:
+        if not raw:
+            raise ValueError(
+                "model.load_pretrained is true (default) but model.mobile_sam_checkpoint is missing."
+            )
+        return str(raw)
+    return None
 
 
 def build_optimizer_sam(
@@ -260,7 +276,7 @@ def log_sam_val_preview_artifacts(
 def log_encoder_merged_sam_val_previews(
     student: nn.Module,
     mobilesam_root: Path,
-    base_sam_checkpoint: str,
+    base_sam_checkpoint: Optional[str],
     sam_val_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -269,7 +285,7 @@ def log_encoder_merged_sam_val_previews(
     staging_dir: Path,
 ) -> None:
     """
-    Merge current TinyViT into a base MobileSAM checkpoint and log mask previews (encoder_distill val).
+    Merge current TinyViT into a MobileSAM scaffold (pretrained .pt or random init) and log previews.
     """
     if num_samples <= 0 or mlflow.active_run() is None:
         return
@@ -447,15 +463,16 @@ def run_encoder_distill(
         pin_memory=pin,
     )
 
+    model_cfg_enc = cfg.get("model", {})
+    encoder_sam_ckpt = resolve_model_sam_checkpoint(model_cfg_enc)
+
     n_prev_enc = int(train_cfg.get("val_preview_samples", 3))
-    sam_ckpt_enc = cfg.get("model", {}).get("mobile_sam_checkpoint")
     multimask_enc = bool(cfg.get("sam", {}).get("multimask_output", False))
     sam_enc_val_loader: Optional[DataLoader] = None
     if (
         is_master
         and n_prev_enc > 0
         and data_cfg.get("annotation_root")
-        and sam_ckpt_enc
         and len(jpg_splits["val"]) > 0
     ):
         pv_ds = SA1BSamDataset(jpg_splits["val"], data_cfg)
@@ -470,22 +487,21 @@ def run_encoder_distill(
         )
 
     TinyViT = _import_tiny_vit(mobilesam_root)
-    model_cfg = cfg["model"]
     model = TinyViT(
-        img_size=int(model_cfg.get("img_size", 1024)),
-        in_chans=int(model_cfg.get("in_chans", 3)),
-        num_classes=int(model_cfg.get("num_classes", 1000)),
-        embed_dims=list(model_cfg.get("embed_dims", [64, 128, 160, 320])),
-        depths=list(model_cfg.get("depths", [2, 2, 6, 2])),
-        num_heads=list(model_cfg.get("num_heads", [2, 4, 5, 10])),
-        window_sizes=list(model_cfg.get("window_sizes", [7, 7, 14, 7])),
-        mlp_ratio=float(model_cfg.get("mlp_ratio", 4.0)),
-        drop_rate=float(model_cfg.get("drop_rate", 0.0)),
-        drop_path_rate=float(model_cfg.get("drop_path_rate", 0.0)),
-        use_checkpoint=bool(model_cfg.get("use_checkpoint", False)),
-        mbconv_expand_ratio=float(model_cfg.get("mbconv_expand_ratio", 4.0)),
-        local_conv_size=int(model_cfg.get("local_conv_size", 3)),
-        layer_lr_decay=float(model_cfg.get("layer_lr_decay", 0.8)),
+        img_size=int(model_cfg_enc.get("img_size", 1024)),
+        in_chans=int(model_cfg_enc.get("in_chans", 3)),
+        num_classes=int(model_cfg_enc.get("num_classes", 1000)),
+        embed_dims=list(model_cfg_enc.get("embed_dims", [64, 128, 160, 320])),
+        depths=list(model_cfg_enc.get("depths", [2, 2, 6, 2])),
+        num_heads=list(model_cfg_enc.get("num_heads", [2, 4, 5, 10])),
+        window_sizes=list(model_cfg_enc.get("window_sizes", [7, 7, 14, 7])),
+        mlp_ratio=float(model_cfg_enc.get("mlp_ratio", 4.0)),
+        drop_rate=float(model_cfg_enc.get("drop_rate", 0.0)),
+        drop_path_rate=float(model_cfg_enc.get("drop_path_rate", 0.0)),
+        use_checkpoint=bool(model_cfg_enc.get("use_checkpoint", False)),
+        mbconv_expand_ratio=float(model_cfg_enc.get("mbconv_expand_ratio", 4.0)),
+        local_conv_size=int(model_cfg_enc.get("local_conv_size", 3)),
+        layer_lr_decay=float(model_cfg_enc.get("layer_lr_decay", 0.8)),
     )
 
     model = model.to(device)
@@ -634,7 +650,7 @@ def run_encoder_distill(
                     log_encoder_merged_sam_val_previews(
                         model,
                         mobilesam_root,
-                        str(sam_ckpt_enc),
+                        encoder_sam_ckpt,
                         sam_enc_val_loader,
                         device,
                         epoch,
@@ -672,12 +688,7 @@ def run_encoder_distill(
             st = model.module.state_dict() if isinstance(model, DDP) else model.state_dict()
             torch.save(strip_module_prefix(st), ckpt_enc)
 
-            sam_ckpt = cfg.get("model", {}).get("mobile_sam_checkpoint")
-            if not sam_ckpt:
-                raise ValueError(
-                    "encoder_distill requires model.mobile_sam_checkpoint to assemble full MobileSAM for MLflow."
-                )
-            sam = build_sam_tiny(mobilesam_root, sam_ckpt, device)
+            sam = build_sam_tiny(mobilesam_root, encoder_sam_ckpt, device)
             merge_tinyvit_encoder_into_sam(sam, strip_module_prefix(st), strict=False)
             sam.eval()
 
@@ -783,17 +794,7 @@ def run_full_sam(
         pin_memory=torch.cuda.is_available(),
     )
 
-    model_cfg = cfg.get("model", {})
-    load_pretrained = bool(model_cfg.get("load_pretrained", True))
-    sam_ckpt_raw = model_cfg.get("mobile_sam_checkpoint")
-    if load_pretrained:
-        if not sam_ckpt_raw:
-            raise ValueError(
-                "full_sam requires model.mobile_sam_checkpoint when model.load_pretrained is true (default)."
-            )
-        sam_ckpt_resolved: Optional[str] = str(sam_ckpt_raw)
-    else:
-        sam_ckpt_resolved = None
+    sam_ckpt_resolved = resolve_model_sam_checkpoint(cfg.get("model", {}))
 
     sam = build_sam_tiny(mobilesam_root, sam_ckpt_resolved, device)
     if world_size > 1 and torch.cuda.is_available():

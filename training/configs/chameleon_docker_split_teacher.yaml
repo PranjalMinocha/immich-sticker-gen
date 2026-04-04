@@ -22,6 +22,8 @@ data:
   num_workers: 4
 
 model:
+  # false = random-init SAM for merge/export (no .pt); omit mobile_sam_checkpoint
+  load_pretrained: true
   mobile_sam_checkpoint: /path/to/mobile_sam.pt
   img_size: 1024
   in_chans: 3

@@ -28,7 +28,7 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 
 | Mode | What it does | MLflow artifact |
 |------|----------------|-----------------|
-| `encoder_distill` | Train TinyViT vs teacher `.npy`; merge into full SAM using `model.mobile_sam_checkpoint` | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
+| `encoder_distill` | Train TinyViT (random init) vs teacher `.npy`; merge into full SAM using **`model.load_pretrained`** + **`model.mobile_sam_checkpoint`**, or **`load_pretrained: false`** for random-init SAM scaffold | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
 | `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON. **`model.load_pretrained`**: load **`model.mobile_sam_checkpoint`** (default) or **`false`** for train-from-scratch | `checkpoints/mobile_sam_full.pt` |
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
@@ -37,7 +37,7 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 
 **`encoder_distill` merged-SAM previews (option B):** if **`data.annotation_root`** is set (mask JSON) and **`train.val_preview_samples` > 0**, after each encoder validation rank 0 **merges the current TinyViT** into **`model.mobile_sam_checkpoint`**, runs the same box+mask visualization on the val split, and logs under **`val_previews_merged_sam/epoch_XXXX/`**. Requires the same annotations as `full_sam` for those val images.
 
-**`full_sam` initialization:** **`model.load_pretrained`** (default **`true`**) loads **`model.mobile_sam_checkpoint`**. Set **`load_pretrained: false`** to train from **random initialization** (leave **`mobile_sam_checkpoint`** unset or ignored).
+**Pretrained vs scratch (`model` block):** **`load_pretrained`** (default **`true`**) requires **`mobile_sam_checkpoint`**. Set **`load_pretrained: false`** to use a **random-init MobileSAM scaffold** (no `.pt` mount needed): applies to **`full_sam`** (train whole stack from scratch) and **`encoder_distill`** (TinyViT still random init; merged export uses random prompt/decoder unless you use pretrained).
 
 ---
 
