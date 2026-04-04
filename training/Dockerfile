@@ -1,17 +1,17 @@
 # Training image: Ubuntu + PyTorch ROCm 6.0 wheels + training deps.
 # Build from repository root:  docker build -f training/Dockerfile -t immich-sticker-train:rocm .
 #
-# Run (example, 2 GPUs on MI100 host):
+# Run (example, 2 GPUs on MI100 host; data = LOCAL_DATA_ROOT from setup_host.sh):
 #   docker run --rm -it --device=/dev/kfd --device=/dev/dri --group-add video \
-#     -v /path/to/MobileSAM-pytorch:/data:ro \
-#     -v /path/to/out:/out \
+#     -v ~/training-data:/data:ro \
+#     -v ~/training_out:/out \
 #     -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
 #     -e MOBILESAM_ROOT=/mobilesam \
-#     -v /path/to/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
+#     -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
 #     immich-sticker-train:rocm \
-#     torchrun --nproc_per_node=2 train.py --config configs/tinyvit_baseline.yaml
+#     torchrun --nproc_per_node=2 train.py --config configs/chameleon_docker_split_teacher.yaml
 #
-# Override data.root in a custom YAML or mount so /data/sa_000000 exists.
+# Use split_teacher YAML (image_root/teacher_root under /data) or colocated layout under /data.
 
 FROM ubuntu:22.04
 

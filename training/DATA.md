@@ -1,18 +1,28 @@
 # Data layout and object storage
 
-## How training reads data today
+## Recommended flow (Chameleon): sync to local disk, then Docker
 
-The training code **does not** load your entire dataset into RAM. It uses PyTorch `DataLoader` workers that **open each `.jpg` / `.npy` (and optional `.json`) on demand** from whatever path you configure—typically an **rclone FUSE mount** of your Chameleon bucket.
+On the GPU host, **`training/setup_host.sh`** (see README):
+
+1. Configures **rclone** for your S3-compatible bucket (e.g. `objstore-proj28`).
+2. **`rclone sync`** `Raw-Data/` and `Teacher-Embeddings/` into **`LOCAL_DATA_ROOT`** (default `~/training-data` — point this at instance **NVMe / scratch** if you have a larger or faster volume).
+3. If **`Raw-Data/sa-1b-sample.tar.gz`** exists, extracts it once into **`Raw-Data/extracted/`** (marker file avoids repeat work; delete the marker and re-run to re-extract after a new tarball).
+4. Optionally sets **`RCLONE_ENABLE_MOUNT=1`** to **FUSE-mount** the whole bucket for browsing; training I/O should use the **synced paths**, not the mount.
+
+The training container bind-mounts that directory read-only, e.g. **`-v ~/training-data:/data:ro`**, and YAML uses **`split_teacher`** with `image_root` / `teacher_root` under `/data/...` (see **`configs/chameleon_docker_split_teacher.yaml`**).
+
+## How training reads data
+
+The training code **does not** load your entire dataset into RAM. It uses PyTorch `DataLoader` workers that **open each `.jpg` / `.npy` (and optional `.json`) on demand** from the configured paths.
 
 That means:
 
 - **Memory**: bounded roughly by batch size × image/embedding tensors, not by total corpus size.
-- **Throughput**: random access over a network mount can be **I/O bound** (latency, bandwidth). If workers starve the GPU, reduce `num_workers`, cache hot shards on local NVMe, or stage extracted files to instance scratch.
+- **Throughput**: **local SSD** after `rclone sync` avoids per-file latency from object storage; FUSE mounts are optional and can be slower for random access.
 
-**Tar archives (`*.tar.gz`) are not read directly.** The current `dataset_sa1b` collectors expect a **directory tree of extracted** `.jpg` files (and parallel `.npy` or split teacher layout). Plan a one-time or periodic **extract / sync** job (script, `make` target, or CI) that materializes:
+**Tar archives (`*.tar.gz`) are not read directly.** `setup_host.sh` extracts `sa-1b-sample.tar.gz` into `Raw-Data/extracted/` (or extract manually / adjust `SA1B_SAMPLE_TAR` / `RAW_EXTRACT_SUBDIR` in env).
 
-- Images (+ optional mask JSON) under a path you point `data.root` / `data.image_root` at.
-- Teacher embeddings under `data.teacher_root` when using `layout: split_teacher`.
+If the archive unpacks with an **extra top-level folder** (e.g. `extracted/my_prefix/sa_000000/...`), set **`data.image_root`** to include that prefix so `.../<shard>/*.jpg` resolves.
 
 ## Layouts
 
@@ -23,13 +33,15 @@ data.root / <shard> / foo.jpg
 data.root / <shard> / foo.npy
 ```
 
-### `split_teacher` (matches Raw-Data + Teacher-Embeddings style buckets)
+### `split_teacher` (matches Raw-Data + Teacher-Embeddings buckets)
+
+After host prep + extract:
 
 ```yaml
 data:
   layout: split_teacher
-  image_root: /mount/Raw-Data/extracted
-  teacher_root: /mount/Teacher-Embeddings
+  image_root: /data/Raw-Data/extracted
+  teacher_root: /data/Teacher-Embeddings
   shard_dirs: [sa_000000]
 ```
 

@@ -2,7 +2,7 @@
 
 The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + frozen pretrained prompt/mask decoder weights) for MLflow. Alternative **`training.mode`** values fine-tune the **entire** model or run **phased** freeze/unfreeze schedules. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. Shared helpers live in [`training_core.py`](training_core.py).
 
-**Data & object storage:** see **[`DATA.md`](DATA.md)** (rclone mount, `split_teacher` vs colocated layout, why tarballs must be extracted).
+**Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, `split_teacher` vs colocated, tarball extract).
 
 ## Layout
 
@@ -18,7 +18,8 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 | [`configs/example_phased.yaml`](configs/example_phased.yaml) | Phased fine-tune example |
 | [`requirements.txt`](requirements.txt) | Python deps (install **PyTorch** separately for your CUDA / ROCm stack) |
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
-| [`setup_host.sh`](setup_host.sh) | Chameleon host: install rclone, mount object store read-only (see below) |
+| [`setup_host.sh`](setup_host.sh) | Chameleon host: rclone, **sync** `Raw-Data` + `Teacher-Embeddings` to local disk, extract sample tarball, optional mount |
+| [`configs/chameleon_docker_split_teacher.yaml`](configs/chameleon_docker_split_teacher.yaml) | Docker paths when data is mounted at `/data` |
 
 **TinyViT import path:** set `mobilesam_root` in YAML, or env `MOBILESAM_ROOT` / `IMMICH_MS_ROOT`, or clone [MobileSAM-pytorch](https://github.com/ChaoningZhang/MobileSAM-pytorch) so `../MobileSAM-pytorch/MobileSAM` exists next to this repo.
 
@@ -51,7 +52,7 @@ sudo usermod -aG docker "$USER"
 # use `sudo docker` until you log out/in, or: newgrp docker
 ```
 
-### 1.3 Secrets and object store mount
+### 1.3 Secrets and staging data on local disk
 
 On the **server**, create **`~/training.env`** (mode `600`) with at least:
 
@@ -60,9 +61,18 @@ AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 ```
 
-Optional overrides (defaults match `setup_host.sh`): `S3_ENDPOINT_URL`, `OBJSTORE_BUCKET`, `RCLONE_REMOTE_NAME`, `RCLONE_MOUNTPOINT`.
+Optional overrides (defaults match `setup_host.sh`):
 
-From the cloned repo, run the host prep script (installs fuse/rclone, configures remote, **daemon-mounts** the bucket):
+| Variable | Purpose |
+|----------|---------|
+| `S3_ENDPOINT_URL`, `OBJSTORE_BUCKET`, `RCLONE_REMOTE_NAME` | Object store connection |
+| `LOCAL_DATA_ROOT` | Where **`Raw-Data`** and **`Teacher-Embeddings`** are synced (default `~/training-data`; use fast instance storage if available) |
+| `OBJSTORE_RAW_PREFIX`, `OBJSTORE_TEACHER_PREFIX` | Bucket folder names (default `Raw-Data`, `Teacher-Embeddings`) |
+| `SA1B_SAMPLE_TAR`, `RAW_EXTRACT_SUBDIR` | Tarball name and extract target under `Raw-Data/` |
+| `RCLONE_ENABLE_MOUNT` | Set to `1` to also **FUSE-mount** the whole bucket (off by default; training should use **`LOCAL_DATA_ROOT`**) |
+| `RCLONE_MOUNTPOINT` | Mount path when `RCLONE_ENABLE_MOUNT=1` |
+
+From the cloned repo, run host prep (installs rclone, **syncs** bucket prefixes, **extracts** `sa-1b-sample.tar.gz` once into `Raw-Data/extracted/`):
 
 ```bash
 cd ~/immich-sticker-gen
@@ -70,13 +80,14 @@ git pull
 bash training/setup_host.sh
 ```
 
-Confirm the mount (default mountpoint **`/tmp/rclone-tests/object`** unless you override `RCLONE_MOUNTPOINT`):
+Verify local layout:
 
 ```bash
-ls /tmp/rclone-tests/object | head
+ls "${LOCAL_DATA_ROOT:-$HOME/training-data}/Raw-Data/extracted" | head
+ls "${LOCAL_DATA_ROOT:-$HOME/training-data}/Teacher-Embeddings" | head
 ```
 
-Point **`data.root`** in your YAML at the directory that **contains** your shard folder (e.g. parent of `sa_000000`) **on that mount** or on local disk.
+For Docker, bind-mount that directory at **`/data`** and use **`configs/chameleon_docker_split_teacher.yaml`** or equivalent `data.image_root` / `data.teacher_root` paths.
 
 ### 1.4 Clone repo and MobileSAM on the instance
 
@@ -162,12 +173,13 @@ cd ~/immich-sticker-gen
 docker build -f training/Dockerfile -t immich-sticker-train:rocm .
 ```
 
-Example run (adjust host paths for data, MobileSAM, output):
+Example run: mount **staged local data** (same tree `setup_host.sh` created under `LOCAL_DATA_ROOT`, default `~/training-data`):
 
 ```bash
+DATA_ROOT="${LOCAL_DATA_ROOT:-$HOME/training-data}"
 docker run --rm -it \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  -v /tmp/rclone-tests/object:/data:ro \
+  -v "$DATA_ROOT:/data:ro" \
   -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
   -v ~/training_out:/out \
   -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
@@ -176,7 +188,7 @@ docker run --rm -it \
   torchrun --nproc_per_node=2 train.py --config /out/run.yaml
 ```
 
-Ensure **`data.root`** inside the YAML matches the **in-container** path (e.g. `/data/...` if you mounted object store at `/data`).
+Copy and edit **`training/configs/chameleon_docker_split_teacher.yaml`** into `/out/run.yaml` (set `model.mobile_sam_checkpoint`, MLflow URI), or set **`data.image_root`** / **`data.teacher_root`** / **`data.layout`** to match your tree under `/data`.
 
 ---
 
