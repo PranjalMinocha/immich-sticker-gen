@@ -3,10 +3,10 @@
 # After distillation, a full MobileSAM checkpoint is assembled (see training.use_pretrained / pretrained_checkpoint_path).
 
 training:
-  mode: encoder_distill
+  mode: full_sam
   # Load MobileSAM .pt for prompt+mask decoder when merging export (false = random-init SAM scaffold)
-  use_pretrained: true
-  pretrained_checkpoint_path: /path/to/mobile_sam.pt
+  use_pretrained: false
+  pretrained_checkpoint_path: None
 
 # Path to MobileSAM package root (directory containing mobile_sam/). If null, uses env
 # MOBILESAM_ROOT or sibling ../MobileSAM-pytorch/MobileSAM next to this repo.
@@ -48,9 +48,9 @@ model:
 train:
   epochs: 8
   batch_size: 8
-  optimizer: sgd
-  learning_rate: 0.05
-  weight_decay: 0.0005
+  optimizer: adamw
+  learning_rate: 0.00005
+  weight_decay: 0.0001
   momentum: 0.9
   scheduler_gamma: 0.5
   log_interval_batches: 50
@@ -62,9 +62,9 @@ train:
   val_preview_samples: 3
 
 mlflow:
-  tracking_uri: http://129.114.27.248:8000
-  experiment_name: immich-sticker-encoder
-  run_name: null
+  tracking_uri: http://129.114.27.56:8000
+  experiment_name: mobilesam-train
+  run_name: full-pipeline-scratch
 
 output:
   dir: /tmp/immich_sticker_training_out
