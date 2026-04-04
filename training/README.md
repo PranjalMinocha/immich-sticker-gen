@@ -107,7 +107,7 @@ For Docker, bind-mount that directory at **`/data`** and use **`configs/chameleo
 cd ~
 # Replace with your team’s GitHub URL for this repository.
 git clone https://github.com/PranjalMinocha/immich-sticker-gen.git
-git clone --recursive https://github.com/ChaoningZhang/MobileSAM-pytorch.git
+git clone --recursive https://github.com/liuguoyou/MobileSAM-pytorch.git
 ```
 
 Set **`MOBILESAM_ROOT`** to `~/MobileSAM-pytorch/MobileSAM` (or pass `mobilesam_root` in YAML).
