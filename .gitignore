@@ -1,6 +1,3 @@
-# Local Cursor context (not for GitHub)
-.cursorrules
-
 __pycache__/
 *.py[cod]
 *.egg-info/
