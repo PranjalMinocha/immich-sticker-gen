@@ -1,6 +1,6 @@
 # Training — unified MobileSAM workflows
 
-The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + frozen pretrained prompt/mask decoder weights) for MLflow. Alternative **`training.mode`** values fine-tune the **entire** model or run **phased** freeze/unfreeze schedules. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. Shared helpers live in [`training_core.py`](training_core.py).
+The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + pretrained prompt/mask decoder weights) for MLflow. **`training.mode: full_sam`** fine-tunes the full model with mask supervision. **Distill then segment** = two runs: `encoder_distill` first, then `full_sam` with `model.mobile_sam_checkpoint` set to the first run’s `mobile_sam_full.pt`. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. Shared helpers live in [`training_core.py`](training_core.py).
 
 **Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, `split_teacher` vs colocated, tarball extract).
 
@@ -8,14 +8,13 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 
 | File / directory | Role |
 |------------------|------|
-| [`train.py`](train.py) | **Main entry:** `training.mode` = `encoder_distill` \| `full_sam` \| `phased_finetune` |
+| [`train.py`](train.py) | **Main entry:** `training.mode` = `encoder_distill` \| `full_sam` |
 | [`training_core.py`](training_core.py) | Distributed setup, flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
 | [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, colocated / `split_teacher` pairs, optional mask JSON for SAM modes |
 | [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`model.mobile_sam_checkpoint` required) |
 | [`configs/tinyvit_local_sa1b.yaml`](configs/tinyvit_local_sa1b.yaml) | Local smoke-test paths |
-| [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision |
-| [`configs/example_phased.yaml`](configs/example_phased.yaml) | Phased fine-tune example |
+| [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision (use after distill by pointing `mobile_sam_checkpoint` at prior `mobile_sam_full.pt`) |
 | [`requirements.txt`](requirements.txt) | Python deps (install **PyTorch** separately for your CUDA / ROCm stack) |
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
 | [`setup_host.sh`](setup_host.sh) | Chameleon host: rclone, **sync** `Raw-Data` + `Teacher-Embeddings` to local disk, extract sample tarball, optional mount |
@@ -28,8 +27,7 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 | Mode | What it does | MLflow artifact |
 |------|----------------|-----------------|
 | `encoder_distill` | Train TinyViT vs teacher `.npy`; merge into full SAM using `model.mobile_sam_checkpoint` | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
-| `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON | `checkpoints/mobile_sam_full.pt` |
-| `phased_finetune` | Sequence of phases with `freeze_components` + `learning_rate`; optional `phased_finetune.init_encoder_from` | `checkpoints/mobile_sam_full.pt` |
+| `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON. Set `model.mobile_sam_checkpoint` to official `mobile_sam.pt` or to **`mobile_sam_full.pt` from a prior encoder run** | `checkpoints/mobile_sam_full.pt` |
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 

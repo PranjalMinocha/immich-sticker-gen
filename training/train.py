@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-Unified training entry: encoder distillation, full MobileSAM fine-tuning, or phased freeze/unfreeze.
-Config key: training.mode = encoder_distill | full_sam | phased_finetune
+Unified training entry: encoder distillation or full MobileSAM fine-tuning.
+Config key: training.mode = encoder_distill | full_sam
 
-Artifacts: only full MobileSAM state dict (mobile_sam_full.pt) is logged to MLflow (plus split manifest).
+Two-stage (distill then segment): run encoder_distill, then full_sam with model.mobile_sam_checkpoint
+set to the first run's mobile_sam_full.pt (MLflow artifact or local path).
+
+Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
 System metrics (CPU/RAM/disk, optional GPU util) logged each epoch when psutil is installed.
 """
 from __future__ import annotations
@@ -109,19 +112,6 @@ def log_system_metrics_mlflow(step: int, device: torch.device) -> None:
     gu = try_rocm_gpu_util()
     if gu is not None:
         mlflow.log_metric("gpu_util_percent_rocm_smi", gu, step=step)
-
-
-def set_sam_component_trainable(sam: nn.Module, freeze_components: List[str]) -> None:
-    m = _unwrap(sam)
-    mapping = {
-        "image_encoder": m.image_encoder,
-        "prompt_encoder": m.prompt_encoder,
-        "mask_decoder": m.mask_decoder,
-    }
-    for name, mod in mapping.items():
-        on = name not in freeze_components
-        for p in mod.parameters():
-            p.requires_grad = on
 
 
 def build_optimizer_sam(
@@ -689,190 +679,6 @@ def run_full_sam(
         cleanup_distributed()
 
 
-def run_phased_finetune(
-    cfg: dict,
-    cfg_path: Path,
-    mobilesam_root: Path,
-    device: torch.device,
-    rank: int,
-    world_size: int,
-    local_rank: int,
-    is_master: bool,
-    backend: str,
-) -> None:
-    pf = cfg.get("phased_finetune") or {}
-    phases = pf.get("phases") or []
-    if not phases:
-        raise ValueError("phased_finetune.phases must be a non-empty list")
-
-    train_cfg = cfg["train"]
-    data_cfg = cfg["data"]
-    if not data_cfg.get("annotation_root"):
-        raise ValueError("phased_finetune requires data.annotation_root.")
-
-    out_cfg = cfg.get("output", {})
-    output_dir = Path(out_cfg.get("dir", "./training_outputs")).expanduser()
-    if is_master:
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-    split_out = output_dir / "split_manifest.json"
-    manifest_in = data_cfg.get("split_manifest")
-    manifest_path = Path(manifest_in).resolve() if manifest_in else None
-
-    _, _, _, _, split_meta, jpg_splits = build_datasets(
-        data_cfg=data_cfg,
-        img_size=int(data_cfg.get("image_size", 1024)),
-        seed=int(data_cfg.get("seed", 42)),
-        train_frac=float(data_cfg.get("train_frac", 0.7)),
-        val_frac=float(data_cfg.get("val_frac", 0.1)),
-        test_frac=float(data_cfg.get("test_frac", 0.2)),
-        split_manifest=manifest_path,
-        split_manifest_out=split_out if is_master and manifest_path is None else None,
-    )
-
-    batch_size = int(train_cfg.get("batch_size", 4))
-    per_gpu = max(batch_size // world_size, 1)
-    num_workers = int(data_cfg.get("num_workers", 4))
-
-    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg)
-    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg)
-    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg)
-    train_sampler: Optional[DistributedSampler] = None
-    if world_size > 1:
-        train_sampler = DistributedSampler(
-            train_ds, shuffle=True, seed=int(data_cfg.get("seed", 42))
-        )
-    sam_train = DataLoader(
-        train_ds,
-        batch_size=per_gpu,
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
-        num_workers=num_workers,
-        collate_fn=_sam_collate,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=True,
-    )
-    sam_val = DataLoader(
-        val_ds,
-        batch_size=per_gpu,
-        shuffle=False,
-        num_workers=num_workers,
-        collate_fn=_sam_collate,
-        pin_memory=torch.cuda.is_available(),
-    )
-    sam_test = DataLoader(
-        test_ds,
-        batch_size=per_gpu,
-        shuffle=False,
-        num_workers=num_workers,
-        collate_fn=_sam_collate,
-        pin_memory=torch.cuda.is_available(),
-    )
-
-    sam_ckpt = cfg.get("model", {}).get("mobile_sam_checkpoint")
-    init_enc = pf.get("init_encoder_from")
-    if init_enc:
-        enc_path = Path(init_enc).expanduser()
-
-        def _load_sd():
-            try:
-                return torch.load(enc_path, map_location="cpu", weights_only=False)
-            except TypeError:
-                return torch.load(enc_path, map_location="cpu")
-
-        sam = build_sam_tiny(mobilesam_root, sam_ckpt, device)
-        merge_tinyvit_encoder_into_sam(sam, strip_module_prefix(_load_sd()), strict=False)
-    else:
-        sam = build_sam_tiny(mobilesam_root, sam_ckpt, device)
-
-    if world_size > 1 and torch.cuda.is_available():
-        try:
-            sam = nn.SyncBatchNorm.convert_sync_batchnorm(sam)
-        except Exception:
-            pass
-        sam = DDP(sam, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-
-    mlflow_cfg = cfg.get("mlflow", {})
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI") or mlflow_cfg.get(
-        "tracking_uri", "http://127.0.0.1:5000"
-    )
-    experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-sam")
-    run_name = mlflow_cfg.get("run_name")
-    sha = git_sha(_repo_root())
-    flat_params: Dict[str, str] = {}
-    cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
-    flatten_cfg(
-        "",
-        {**cfg_flat, "git_sha": sha, "world_size": world_size, "backend": backend},
-        flat_params,
-    )
-    multimask = bool(cfg.get("sam", {}).get("multimask_output", False))
-
-    if is_master:
-        mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment(experiment_name)
-        mlflow.start_run(run_name=run_name)
-        for k, v in flat_params.items():
-            mlflow.log_param(k, v)
-        mlflow.log_param("config_path", str(cfg_path))
-        for k, v in split_meta.items():
-            if k != "counts":
-                mlflow.log_param(f"split_{k}", str(v))
-        if "counts" in split_meta:
-            for sk, sv in split_meta["counts"].items():
-                mlflow.log_param(f"split_count_{sk}", sv)
-        for k, v in gpu_env_info().items():
-            mlflow.log_param(f"env_{k}", v)
-        if split_out.is_file():
-            mlflow.log_artifact(str(split_out), artifact_path="split")
-        log_system_metrics_mlflow(0, device)
-
-    epoch_off = 0
-    opt_name = train_cfg.get("optimizer", "adamw").lower()
-    wd = float(train_cfg.get("weight_decay", 0.01))
-    momentum = float(train_cfg.get("momentum", 0.9))
-
-    try:
-        for pi, phase in enumerate(phases):
-            freeze = list(phase.get("freeze_components", []))
-            set_sam_component_trainable(sam, freeze)
-            lr = float(phase.get("learning_rate", train_cfg.get("learning_rate", 1e-4)))
-            optimizer = build_optimizer_sam(sam, opt_name, lr, wd, momentum)
-            scheduler = torch.optim.lr_scheduler.ExponentialLR(
-                optimizer, gamma=float(phase.get("scheduler_gamma", train_cfg.get("scheduler_gamma", 0.9)))
-            )
-            ep_n = int(phase.get("epochs", 1))
-            train_sam_epochs(
-                sam,
-                sam_train,
-                sam_val,
-                device,
-                ep_n,
-                optimizer,
-                scheduler,
-                train_cfg,
-                is_master,
-                world_size,
-                multimask,
-                epoch_offset=epoch_off,
-                train_sampler=train_sampler,
-            )
-            epoch_off += ep_n
-            if world_size > 1:
-                dist.barrier()
-
-        if is_master and sam_test is not None:
-            tiou = eval_sam_loader_mean_iou(_unwrap(sam), sam_test, device, multimask)
-            mlflow.log_metric("test_mean_iou_lowres", tiou)
-            full_path = output_dir / "mobile_sam_full.pt"
-            save_sam_checkpoint(full_path, sam)
-            mlflow.log_artifact(str(full_path), artifact_path="checkpoints")
-    finally:
-        if is_master and mlflow.active_run():
-            mlflow.end_run()
-        cleanup_distributed()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Unified MobileSAM / TinyViT training")
     parser.add_argument("--config", type=str, required=True)
@@ -898,10 +704,6 @@ def main() -> None:
         )
     elif mode == "full_sam":
         run_full_sam(
-            cfg, cfg_path, mobilesam_root, device, rank, world_size, local_rank, is_master, backend
-        )
-    elif mode == "phased_finetune":
-        run_phased_finetune(
             cfg, cfg_path, mobilesam_root, device, rank, world_size, local_rank, is_master, backend
         )
     else:
