@@ -54,10 +54,7 @@ train:
   momentum: 0.9
   scheduler_gamma: 0.5
   log_interval_batches: 50
-  # tqdm progress (rank 0 only when using torchrun)
   show_progress: true
-  # nccl often works on ROCm (RCCL); use gloo if you hit backend errors on AMD.
-  distributed_backend: nccl
   # With data.annotation_root set: log merged-SAM mask previews each val epoch (0 = off)
   val_preview_samples: 3
 

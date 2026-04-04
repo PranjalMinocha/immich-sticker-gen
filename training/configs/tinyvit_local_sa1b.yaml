@@ -45,7 +45,6 @@ train:
   scheduler_gamma: 0.5
   log_interval_batches: 5
   show_progress: true
-  distributed_backend: gloo
 
 mlflow:
   tracking_uri: http://127.0.0.1:5000

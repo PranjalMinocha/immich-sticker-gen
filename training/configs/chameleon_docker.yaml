@@ -45,7 +45,6 @@ train:
   scheduler_gamma: 0.5
   log_interval_batches: 50
   show_progress: true
-  distributed_backend: nccl
 
 mlflow:
   tracking_uri: http://127.0.0.1:5000

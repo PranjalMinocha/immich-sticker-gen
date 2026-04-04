@@ -19,7 +19,7 @@ flowchart TB
 
   subgraph docker["Docker (graded path)"]
     BUILD["docker build -f training/Dockerfile"]
-    RUN["docker run: ROCm devices + volumes"]
+    RUN["docker run: ROCm + --shm-size + volumes"]
     VM1["-v LOCAL_DATA_ROOT:/data:ro"]
     VM2["-v MobileSAM:/mobilesam:ro"]
     VM3["-v out dir:/out"]
@@ -29,7 +29,7 @@ flowchart TB
     RUN --> VM3
   end
 
-  subgraph train["training/train.py + YAML"]
+  subgraph train["python3 train.py + YAML (single GPU)"]
     CFG["--config *.yaml"]
     MODE{"training.mode"}
     ENC["encoder_distill"]
@@ -59,9 +59,9 @@ flowchart TB
 
 **Host staging** — `setup_host.sh` sources `~/training.env`, configures rclone for S3-compatible storage, **`rclone sync`**s **`Raw-Data`** and **`Teacher-Embeddings`** into **`LOCAL_DATA_ROOT`** (default `~/training-data`), and extracts **`sa-1b-sample.tar.gz`** into **`Raw-Data/extracted/`** once. Optional whole-bucket FUSE mount (`RCLONE_ENABLE_MOUNT=1`) is for browsing; training I/O should use the synced tree.
 
-**Container** — Image from **`training/Dockerfile`**: Ubuntu, ROCm PyTorch, Python deps. Typical mounts: data at **`/data`**, MobileSAM package at **`/mobilesam`**, writable output (e.g. **`/out`**) for configs and checkpoints.
+**Container** — Image from **`training/Dockerfile`**: Ubuntu, ROCm PyTorch, Python deps. Typical mounts: data at **`/data`**, MobileSAM at **`/mobilesam`**, **`/out`** for configs/checkpoints. Use **`--shm-size`** (e.g. `8g`) so DataLoader workers do not exhaust `/dev/shm`.
 
-**Training modes** — **`train.py`**. Knobs: **`training.mode`**, **`training.use_pretrained`**, **`training.pretrained_checkpoint_path`**. **`encoder_distill`**: TinyViT vs **`.npy`**, merge, log **`mobile_sam_full.pt`**. **`full_sam`**: mask supervision. **Distill → segment**: second run’s path = first **`mobile_sam_full.pt`**.
+**Training modes** — **`python3 train.py`** (single GPU). Knobs: **`training.mode`**, **`training.use_pretrained`**, **`training.pretrained_checkpoint_path`**. **`encoder_distill`**: TinyViT vs **`.npy`**, merge, log **`mobile_sam_full.pt`**. **`full_sam`**: mask supervision. **Distill → segment**: second run’s path = first **`mobile_sam_full.pt`**.
 
 **Validation previews** — **`full_sam`:** **`val_previews/epoch_XXXX/`**. **`encoder_distill`** + **`data.annotation_root`:** **`val_previews_merged_sam/epoch_XXXX/`**. **`train.val_preview_samples`** (default **3**; **0** off).
 

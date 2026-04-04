@@ -1,7 +1,7 @@
 """
-Shared training utilities: distributed setup, MLflow param flattening, TinyViT paths,
+Shared training utilities: MLflow param flattening, TinyViT paths,
 encoder distillation loss, encoder-only evaluation loop.
-Used by `train.py`.
+Used by `train.py` (single-GPU only).
 """
 from __future__ import annotations
 
@@ -13,9 +13,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -96,25 +94,8 @@ def gpu_env_info() -> Dict[str, str]:
     return info
 
 
-def setup_distributed(backend: str) -> tuple[int, int, int]:
-    if "WORLD_SIZE" not in os.environ or int(os.environ["WORLD_SIZE"]) <= 1:
-        return 0, 1, 0
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend=backend, init_method="env://")
-    return rank, world_size, local_rank
-
-
-def cleanup_distributed() -> None:
-    if dist.is_initialized():
-        dist.destroy_process_group()
-
-
 def _unwrap(model: nn.Module) -> nn.Module:
-    return model.module if isinstance(model, DDP) else model
+    return model
 
 
 @torch.no_grad()
@@ -125,7 +106,7 @@ def evaluate_encoder(
     desc: str = "Eval",
     show_progress: bool = False,
 ) -> Dict[str, float]:
-    """Single-process eval (call on rank 0 only when using DDP)."""
+    """Encoder eval on one process."""
     m = _unwrap(model)
     m.eval()
     total_loss = 0.0

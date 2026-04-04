@@ -360,7 +360,6 @@ def build_sam_loaders(
     jpg_splits: Dict[str, List[Path]],
     batch_size: int,
     num_workers: int,
-    distributed_sampler_train: Any,
     device_is_cuda: bool,
 ):
     if not data_cfg.get("annotation_root"):
@@ -375,8 +374,7 @@ def build_sam_loaders(
     train_loader = torch.utils.data.DataLoader(
         train_ds,
         batch_size=batch_size,
-        shuffle=(distributed_sampler_train is None),
-        sampler=distributed_sampler_train,
+        shuffle=True,
         num_workers=num_workers,
         collate_fn=collate,
         pin_memory=device_is_cuda,

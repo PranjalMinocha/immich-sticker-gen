@@ -9,7 +9,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | File / directory | Role |
 |------------------|------|
 | [`train.py`](train.py) | **Main entry:** `training.mode` + `training.use_pretrained` / `pretrained_checkpoint_path` |
-| [`training_core.py`](training_core.py) | Distributed setup, flatten_cfg, TinyViT import path, encoder loss, encoder eval |
+| [`training_core.py`](training_core.py) | flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
 | [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, `data_dir` + `embeddings_dir` pairs, optional mask JSON for SAM modes |
 | [`DATA.md`](DATA.md) | Object storage sync, layouts, tar extract |
@@ -41,9 +41,11 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
-**`full_sam` validation previews:** after each epoch’s val IoU, rank 0 logs **`train.val_preview_samples`** (default **3**) PNGs to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
+**`full_sam` validation previews:** after each epoch’s val IoU, **`train.val_preview_samples`** (default **3**) PNGs are logged to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
 
-**`encoder_distill` merged-SAM previews:** with **`data.annotation_root`** and **`train.val_preview_samples` > 0**, after val metrics rank 0 merges TinyViT into the SAM scaffold, logs **`val_previews_merged_sam/epoch_XXXX/`**.
+**`encoder_distill` merged-SAM previews:** with **`data.annotation_root`** and **`train.val_preview_samples` > 0**, after val metrics the run merges TinyViT into the SAM scaffold and logs **`val_previews_merged_sam/epoch_XXXX/`**.
+
+Training is **single-GPU only** (`python3 train.py`). Do not use **`torchrun --nproc_per_node` > 1**.
 
 ---
 
@@ -141,7 +143,6 @@ All hyperparameters and paths should come from **one YAML file** per run (no one
    | `output.dir` | Where checkpoints / logs go; use `/out` in Docker when mounting `~/training_out:/out` |
    | `mobilesam_root` | Path to `MobileSAM` package (or rely on `MOBILESAM_ROOT`) |
    | `train.epochs`, `train.batch_size`, `train.lr`, … | Experiment knobs |
-   | `train.distributed_backend` | On some AMD setups use `gloo` if NCCL fails |
 
 3. **Smoke test:** set `train.epochs: 1` to verify paths and MLflow before long runs.
 
@@ -167,17 +168,7 @@ cd training
 python3 train.py --config /path/to/run.yaml
 ```
 
-### 3.2 Bare metal (2× GPU, e.g. MI100 ×2)
-
-```bash
-cd ~/immich-sticker-gen/training
-export MOBILESAM_ROOT=~/MobileSAM-pytorch/MobileSAM
-export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
-
-torchrun --nproc_per_node=2 train.py --config /path/to/run.yaml
-```
-
-### 3.3 Docker (ROCm) — matches graded “train in container” flow
+### 3.2 Docker (ROCm) — matches graded “train in container” flow
 
 Build from **repository root** with **BuildKit** so **rebuilds** reuse cached layers (especially PyTorch) when only parts of the repo change:
 
@@ -193,6 +184,7 @@ Example run: mount **staged local data** (same tree `setup_host.sh` created unde
 ```bash
 DATA_ROOT="${LOCAL_DATA_ROOT:-$HOME/training-data}"
 docker run --rm -it \
+  --shm-size=8g \
   --device=/dev/kfd --device=/dev/dri --group-add video \
   -v "$DATA_ROOT:/data:ro" \
   -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
@@ -200,7 +192,7 @@ docker run --rm -it \
   -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
   -e MOBILESAM_ROOT=/mobilesam \
   immich-sticker-train:rocm \
-  torchrun --nproc_per_node=2 train.py --config /out/run.yaml
+  python3 train.py --config /out/run.yaml
 ```
 
 Copy and edit **`training/configs/chameleon_docker.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.data_dir`** / **`data.embeddings_dir`** to match `/data`.

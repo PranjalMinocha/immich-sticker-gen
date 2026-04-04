@@ -2,15 +2,15 @@
 # Build from repository root (BuildKit reuses layers on rebuild when training/ code or requirements unchanged):
 #   DOCKER_BUILDKIT=1 docker build -f training/Dockerfile -t immich-sticker-train:rocm .
 #
-# Run (example, 2 GPUs on MI100 host; data = LOCAL_DATA_ROOT from setup_host.sh):
-#   docker run --rm -it --device=/dev/kfd --device=/dev/dri --group-add video \
+# Run (example; data = LOCAL_DATA_ROOT from setup_host.sh). Use --shm-size for DataLoader workers.
+#   docker run --rm -it --shm-size=8g --device=/dev/kfd --device=/dev/dri --group-add video \
 #     -v ~/training-data:/data:ro \
 #     -v ~/training_out:/out \
 #     -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
 #     -e MOBILESAM_ROOT=/mobilesam \
 #     -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
 #     immich-sticker-train:rocm \
-#     torchrun --nproc_per_node=2 train.py --config configs/chameleon_docker.yaml
+#     python3 train.py --config configs/chameleon_docker.yaml
 #
 # Set data.data_dir and data.embeddings_dir under /data — see DATA.md.
 
