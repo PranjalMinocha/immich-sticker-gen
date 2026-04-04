@@ -12,7 +12,7 @@ Immich users often want quick, high-quality cutouts (“stickers”) from person
 
 | Path | Purpose |
 |------|---------|
-| [`training/`](training/) | Encoder distillation: `train_encoder.py`, YAML configs, Dockerfile, Chameleon host prep (`setup_host.sh`) |
+| [`training/`](training/) | Training: `train.py`, `training_core.py`, YAML configs, Dockerfile, `setup_host.sh` |
 | [`serving/`](serving/) | Serving experiments and notebooks (separate from graded training script path) |
 
 ## Training (quick pointer)

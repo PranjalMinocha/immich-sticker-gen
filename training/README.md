@@ -1,6 +1,6 @@
 # Training — unified MobileSAM workflows
 
-The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + frozen pretrained prompt/mask decoder weights) for MLflow. Alternative **`training.mode`** values fine-tune the **entire** model or run **phased** freeze/unfreeze schedules. All runs are **config-only** (no duplicate scripts) and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. [`train_encoder.py`](train_encoder.py) is a thin wrapper that calls `train.py`.
+The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + frozen pretrained prompt/mask decoder weights) for MLflow. Alternative **`training.mode`** values fine-tune the **entire** model or run **phased** freeze/unfreeze schedules. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. Shared helpers live in [`training_core.py`](training_core.py).
 
 **Data & object storage:** see **[`DATA.md`](DATA.md)** (rclone mount, `split_teacher` vs colocated layout, why tarballs must be extracted).
 
@@ -9,7 +9,7 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 | File / directory | Role |
 |------------------|------|
 | [`train.py`](train.py) | **Main entry:** `training.mode` = `encoder_distill` \| `full_sam` \| `phased_finetune` |
-| [`train_encoder.py`](train_encoder.py) | Wrapper → `train.py` (keeps old invocations working) |
+| [`training_core.py`](training_core.py) | Distributed setup, flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
 | [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, colocated / `split_teacher` pairs, optional mask JSON for SAM modes |
 | [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`model.mobile_sam_checkpoint` required) |

@@ -35,10 +35,10 @@ from sam_utils import (
     segmentation_loss,
     strip_module_prefix,
 )
-from train_encoder import (  # reuse small utilities
+from training_core import (
     cleanup_distributed,
     encoder_distill_loss,
-    evaluate as evaluate_encoder,
+    evaluate_encoder,
     flatten_cfg,
     git_sha,
     gpu_env_info,

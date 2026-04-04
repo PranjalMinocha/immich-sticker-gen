@@ -1,16 +1,16 @@
-#!/usr/bin/env python3
 """
-MobileSAM-style TinyViT encoder distillation against ViT-H teacher .npy features.
-Config-driven single entrypoint; MLflow logging; optional torchrun multi-GPU.
+Shared training utilities: distributed setup, MLflow param flattening, TinyViT paths,
+encoder distillation loss, encoder-only evaluation loop.
+Used by `train.py`.
 """
 from __future__ import annotations
 
 import json
 import os
 import subprocess
-import time
+import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import torch
 import torch.distributed as dist
@@ -118,7 +118,7 @@ def _unwrap(model: nn.Module) -> nn.Module:
 
 
 @torch.no_grad()
-def evaluate(
+def evaluate_encoder(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
@@ -149,14 +149,3 @@ def evaluate(
         "loss": total_loss / max(n_batches, 1),
         "cosine_similarity": total_cos / max(n_batches, 1),
     }
-
-
-def main() -> None:
-    """Delegate to unified `train.py` (lazy import so `torchrun train_encoder.py` keeps env vars)."""
-    import train as train_mod
-
-    train_mod.main()
-
-
-if __name__ == "__main__":
-    main()
