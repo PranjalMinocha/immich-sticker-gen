@@ -1,11 +1,18 @@
 # TinyViT encoder distillation (MobileSAM-style). Override paths for your environment.
-# Teacher .npy files must sit next to each .jpg (ViT-H image embedding from preprocess).
+# Unified entry: python train.py --config <this file>
+# After distillation, a full MobileSAM checkpoint is assembled and logged (see model.mobile_sam_checkpoint).
+
+training:
+  mode: encoder_distill
 
 # Path to MobileSAM package root (directory containing mobile_sam/). If null, uses env
 # MOBILESAM_ROOT or sibling ../MobileSAM-pytorch/MobileSAM next to this repo.
 mobilesam_root: null
 
 data:
+  # layout: colocated  -> root/shard/{jpg,npy together}
+  # layout: split_teacher -> image_root/shard/*.jpg + teacher_root/shard/*.npy (same stem)
+  layout: colocated
   root: /data
   shard_dirs:
     - sa_000000
@@ -17,8 +24,15 @@ data:
   # Set to an existing JSON manifest to freeze splits across runs; otherwise written to output.dir
   split_manifest: null
   num_workers: 4
+  # Optional: SA-1B-style JSON masks (COCO RLE) for test IoU after encoder run
+  # annotation_root: /data/annotations
+
+sam:
+  multimask_output: false
 
 model:
+  # Required for encoder_distill / exports: MobileSAM .pt (prompt + decoder); merge trained TinyViT in.
+  mobile_sam_checkpoint: /path/to/mobile_sam.pt
   img_size: 1024
   in_chans: 3
   num_classes: 1000

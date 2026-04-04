@@ -1,20 +1,36 @@
-# Training — TinyViT encoder distillation
+# Training — unified MobileSAM workflows
 
-Stage-1 training **distills a TinyViT encoder** to match **ViT-H teacher embeddings** (MobileSAM-style): for each training image, a **`.npy`** file of teacher features sits next to the **`.jpg`**. Runs are **config-driven** and logged to **[MLflow](https://mlflow.org/)** (`train_encoder.py`).
+The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + frozen pretrained prompt/mask decoder weights) for MLflow. Alternative **`training.mode`** values fine-tune the **entire** model or run **phased** freeze/unfreeze schedules. All runs are **config-only** (no duplicate scripts) and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. [`train_encoder.py`](train_encoder.py) is a thin wrapper that calls `train.py`.
+
+**Data & object storage:** see **[`DATA.md`](DATA.md)** (rclone mount, `split_teacher` vs colocated layout, why tarballs must be extracted).
 
 ## Layout
 
 | File / directory | Role |
 |------------------|------|
-| [`train_encoder.py`](train_encoder.py) | Single entrypoint: YAML config, MLflow, optional `torchrun` multi-GPU |
-| [`dataset_sa1b.py`](dataset_sa1b.py) | **70% / 10% / 20%** train / val / test split |
-| [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Template for Chameleon / Docker (`data.root` = data mount) |
-| [`configs/tinyvit_local_sa1b.yaml`](configs/tinyvit_local_sa1b.yaml) | Example paths for a local `MobileSAM-pytorch` sibling checkout |
+| [`train.py`](train.py) | **Main entry:** `training.mode` = `encoder_distill` \| `full_sam` \| `phased_finetune` |
+| [`train_encoder.py`](train_encoder.py) | Wrapper → `train.py` (keeps old invocations working) |
+| [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
+| [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, colocated / `split_teacher` pairs, optional mask JSON for SAM modes |
+| [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`model.mobile_sam_checkpoint` required) |
+| [`configs/tinyvit_local_sa1b.yaml`](configs/tinyvit_local_sa1b.yaml) | Local smoke-test paths |
+| [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision |
+| [`configs/example_phased.yaml`](configs/example_phased.yaml) | Phased fine-tune example |
 | [`requirements.txt`](requirements.txt) | Python deps (install **PyTorch** separately for your CUDA / ROCm stack) |
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
 | [`setup_host.sh`](setup_host.sh) | Chameleon host: install rclone, mount object store read-only (see below) |
 
 **TinyViT import path:** set `mobilesam_root` in YAML, or env `MOBILESAM_ROOT` / `IMMICH_MS_ROOT`, or clone [MobileSAM-pytorch](https://github.com/ChaoningZhang/MobileSAM-pytorch) so `../MobileSAM-pytorch/MobileSAM` exists next to this repo.
+
+### `training.mode` (YAML)
+
+| Mode | What it does | MLflow artifact |
+|------|----------------|-----------------|
+| `encoder_distill` | Train TinyViT vs teacher `.npy`; merge into full SAM using `model.mobile_sam_checkpoint` | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
+| `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON | `checkpoints/mobile_sam_full.pt` |
+| `phased_finetune` | Sequence of phases with `freeze_components` + `learning_rate`; optional `phased_finetune.init_encoder_from` | `checkpoints/mobile_sam_full.pt` |
+
+**System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
 ---
 
@@ -124,7 +140,7 @@ export MOBILESAM_ROOT=~/MobileSAM-pytorch/MobileSAM
 export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
 
 cd training
-python3 train_encoder.py --config /path/to/run.yaml
+python3 train.py --config /path/to/run.yaml
 ```
 
 ### 3.2 Bare metal (2× GPU, e.g. MI100 ×2)
@@ -134,7 +150,7 @@ cd ~/immich-sticker-gen/training
 export MOBILESAM_ROOT=~/MobileSAM-pytorch/MobileSAM
 export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
 
-torchrun --nproc_per_node=2 train_encoder.py --config /path/to/run.yaml
+torchrun --nproc_per_node=2 train.py --config /path/to/run.yaml
 ```
 
 ### 3.3 Docker (ROCm) — matches graded “train in container” flow
@@ -157,7 +173,7 @@ docker run --rm -it \
   -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
   -e MOBILESAM_ROOT=/mobilesam \
   immich-sticker-train:rocm \
-  torchrun --nproc_per_node=2 train_encoder.py --config /out/run.yaml
+  torchrun --nproc_per_node=2 train.py --config /out/run.yaml
 ```
 
 Ensure **`data.root`** inside the YAML matches the **in-container** path (e.g. `/data/...` if you mounted object store at `/data`).
@@ -172,7 +188,7 @@ Not counted for the Chameleon graded runs, but useful for debugging.
 cd training
 pip install -r requirements.txt   # plus torch for your platform (CPU/CUDA/ROCm)
 export MLFLOW_TRACKING_URI=http://127.0.0.1:5000   # or team server
-python train_encoder.py --config configs/tinyvit_local_sa1b.yaml
+python train.py --config configs/tinyvit_local_sa1b.yaml
 ```
 
 Adjust `tinyvit_local_sa1b.yaml` for your paths.

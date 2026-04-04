@@ -1,0 +1,45 @@
+# Example: fine-tune full MobileSAM (TinyViT + prompt + mask decoder) with mask supervision.
+# Requires extracted images + mask JSON (see training/DATA.md).
+
+training:
+  mode: full_sam
+
+mobilesam_root: null
+
+model:
+  mobile_sam_checkpoint: /path/to/mobile_sam.pt
+
+data:
+  layout: colocated
+  root: /data
+  shard_dirs: [sa_000000]
+  annotation_root: /data/annotations
+  image_size: 1024
+  seed: 42
+  train_frac: 0.7
+  val_frac: 0.1
+  test_frac: 0.2
+  split_manifest: null
+  num_workers: 4
+
+sam:
+  multimask_output: false
+
+train:
+  epochs: 4
+  batch_size: 4
+  optimizer: adamw
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler_gamma: 0.9
+  log_interval_batches: 20
+  show_progress: true
+  distributed_backend: nccl
+
+mlflow:
+  tracking_uri: http://127.0.0.1:5000
+  experiment_name: immich-sticker-sam
+  run_name: null
+
+output:
+  dir: /tmp/immich_sticker_training_out

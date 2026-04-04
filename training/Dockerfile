@@ -9,7 +9,7 @@
 #     -e MOBILESAM_ROOT=/mobilesam \
 #     -v /path/to/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
 #     immich-sticker-train:rocm \
-#     torchrun --nproc_per_node=2 train_encoder.py --config configs/tinyvit_baseline.yaml
+#     torchrun --nproc_per_node=2 train.py --config configs/tinyvit_baseline.yaml
 #
 # Override data.root in a custom YAML or mount so /data/sa_000000 exists.
 
@@ -43,4 +43,4 @@ WORKDIR /app/training
 
 ENV PYTHONPATH=/app/training
 
-CMD ["python3", "train_encoder.py", "--config", "configs/tinyvit_baseline.yaml"]
+CMD ["python3", "train.py", "--config", "configs/tinyvit_baseline.yaml"]
