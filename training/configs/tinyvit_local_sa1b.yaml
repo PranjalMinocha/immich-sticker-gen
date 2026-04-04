@@ -3,6 +3,8 @@
 
 training:
   mode: encoder_distill
+  use_pretrained: true
+  pretrained_checkpoint_path: /path/to/mobile_sam.pt
 
 mobilesam_root: null
 
@@ -20,7 +22,6 @@ data:
   num_workers: 4
 
 model:
-  mobile_sam_checkpoint: /path/to/mobile_sam.pt
   img_size: 1024
   in_chans: 3
   num_classes: 1000

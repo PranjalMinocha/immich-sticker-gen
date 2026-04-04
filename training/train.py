@@ -3,10 +3,10 @@
 Unified training entry: encoder distillation or full MobileSAM fine-tuning.
 Config key: training.mode = encoder_distill | full_sam
 
-Two-stage (distill then segment): run encoder_distill, then full_sam with model.mobile_sam_checkpoint
+Two-stage (distill then segment): run encoder_distill, then full_sam with training.pretrained_checkpoint_path
 set to the first run's mobile_sam_full.pt (MLflow artifact or local path).
-full_sam: model.load_pretrained + model.mobile_sam_checkpoint, or load_pretrained false for scratch init.
-encoder_distill: optional val mask previews when data.annotation_root is set; model.load_pretrained false merges into random-init SAM scaffold.
+Weight loading: training.use_pretrained + training.pretrained_checkpoint_path (legacy: model.load_pretrained,
+model.mobile_sam_checkpoint). Student TinyViT in encoder_distill is always random-init unless extended elsewhere.
 
 Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
 System metrics (CPU/RAM/disk, optional GPU util) logged each epoch when psutil is installed.
@@ -118,19 +118,38 @@ def log_system_metrics_mlflow(step: int, device: torch.device) -> None:
         mlflow.log_metric("gpu_util_percent_rocm_smi", gu, step=step)
 
 
-def resolve_model_sam_checkpoint(model_cfg: dict) -> Optional[str]:
+def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
     """
-    Path to load MobileSAM .pt, or None for random-init scaffold (encoder_distill merge + full_sam).
-    When load_pretrained is true (default), mobile_sam_checkpoint must be set.
+    Canonical: training.use_pretrained + training.pretrained_checkpoint_path.
+    Legacy: model.use_pretrained / model.load_pretrained + model.pretrained_checkpoint_path /
+    model.mobile_sam_checkpoint.
+
+    When use_pretrained is true (default), a checkpoint path is required. False => random-init
+    MobileSAM scaffold (full_sam) or merge target (encoder_distill).
     """
-    load_pretrained = bool(model_cfg.get("load_pretrained", True))
-    raw = model_cfg.get("mobile_sam_checkpoint")
-    if load_pretrained:
-        if not raw:
+    train_top = cfg.get("training") or {}
+    model_cfg = cfg.get("model") or {}
+
+    if "use_pretrained" in train_top:
+        use_pt = bool(train_top["use_pretrained"])
+    elif "use_pretrained" in model_cfg:
+        use_pt = bool(model_cfg["use_pretrained"])
+    else:
+        use_pt = bool(model_cfg.get("load_pretrained", True))
+
+    path = (
+        train_top.get("pretrained_checkpoint_path")
+        or model_cfg.get("pretrained_checkpoint_path")
+        or model_cfg.get("mobile_sam_checkpoint")
+    )
+    if use_pt:
+        if not path:
             raise ValueError(
-                "model.load_pretrained is true (default) but model.mobile_sam_checkpoint is missing."
+                "Pretrained weights enabled (use_pretrained true, default) but no checkpoint path: "
+                "set training.pretrained_checkpoint_path or model.pretrained_checkpoint_path "
+                "(legacy: model.mobile_sam_checkpoint)."
             )
-        return str(raw)
+        return str(path)
     return None
 
 
@@ -464,7 +483,7 @@ def run_encoder_distill(
     )
 
     model_cfg_enc = cfg.get("model", {})
-    encoder_sam_ckpt = resolve_model_sam_checkpoint(model_cfg_enc)
+    encoder_sam_ckpt = resolve_pretrained_checkpoint(cfg)
 
     n_prev_enc = int(train_cfg.get("val_preview_samples", 3))
     multimask_enc = bool(cfg.get("sam", {}).get("multimask_output", False))
@@ -794,7 +813,7 @@ def run_full_sam(
         pin_memory=torch.cuda.is_available(),
     )
 
-    sam_ckpt_resolved = resolve_model_sam_checkpoint(cfg.get("model", {}))
+    sam_ckpt_resolved = resolve_pretrained_checkpoint(cfg)
 
     sam = build_sam_tiny(mobilesam_root, sam_ckpt_resolved, device)
     if world_size > 1 and torch.cuda.is_available():

@@ -61,10 +61,10 @@ flowchart TB
 
 **Container** — Image from **`training/Dockerfile`**: Ubuntu, ROCm PyTorch, Python deps. Typical mounts: data at **`/data`**, MobileSAM package at **`/mobilesam`**, writable output (e.g. **`/out`**) for configs and checkpoints.
 
-**Training modes** — Single entrypoint **`train.py`**. **`encoder_distill`**: TinyViT vs teacher **`.npy`**, merge into full SAM, log **`mobile_sam_full.pt`**. **`full_sam`**: mask supervision via **`data.annotation_root`**; same artifact. **Distill → segment**: run **`encoder_distill`**, then **`full_sam`** with **`model.mobile_sam_checkpoint`** set to the first run’s **`mobile_sam_full.pt`**.
+**Training modes** — **`train.py`**. Knobs: **`training.mode`**, **`training.use_pretrained`**, **`training.pretrained_checkpoint_path`** (legacy `model.*`). **`encoder_distill`**: TinyViT vs **`.npy`**, merge, log **`mobile_sam_full.pt`**. **`full_sam`**: mask supervision. **Distill → segment**: second run’s **`pretrained_checkpoint_path`** = first **`mobile_sam_full.pt`**.
 
-**Validation previews** — **`full_sam`:** after val IoU, **`val_previews/epoch_XXXX/`**. **`encoder_distill`:** if **`data.annotation_root`** is set, merged TinyViT + base checkpoint → **`val_previews_merged_sam/epoch_XXXX/`**. Controlled by **`train.val_preview_samples`** (default **3**; **0** disables).
+**Validation previews** — **`full_sam`:** **`val_previews/epoch_XXXX/`**. **`encoder_distill`** + **`data.annotation_root`:** **`val_previews_merged_sam/epoch_XXXX/`**. **`train.val_preview_samples`** (default **3**; **0** off).
 
-**SAM weights** — **`model.load_pretrained`** (default **true**) + **`model.mobile_sam_checkpoint`**. **`load_pretrained: false`**: **`full_sam`** trains entire SAM from scratch; **`encoder_distill`** still trains TinyViT from scratch but merges into a **random-init** SAM for export (weaker baselines than loading official `mobile_sam.pt`).
+**SAM weights** — **`use_pretrained: true`** + path loads checkpoint; **`false`** = random-init scaffold (**`full_sam`** trains all parts from scratch; **`encoder_distill`** merges into scratch SAM). Student TinyViT remains random-init unless extended later.
 
 **MLflow** — Tracking URI from environment or YAML; flattened params, metrics, optional test IoU, timing, **psutil** / optional **rocm-smi** system metrics.

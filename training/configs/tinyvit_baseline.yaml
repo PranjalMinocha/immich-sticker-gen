@@ -1,9 +1,12 @@
 # TinyViT encoder distillation (MobileSAM-style). Override paths for your environment.
 # Unified entry: python train.py --config <this file>
-# After distillation, a full MobileSAM checkpoint is assembled and logged (see model.mobile_sam_checkpoint).
+# After distillation, a full MobileSAM checkpoint is assembled (see training.use_pretrained / pretrained_checkpoint_path).
 
 training:
   mode: encoder_distill
+  # Load MobileSAM .pt for prompt+mask decoder when merging export (false = random-init SAM scaffold)
+  use_pretrained: true
+  pretrained_checkpoint_path: /path/to/mobile_sam.pt
 
 # Path to MobileSAM package root (directory containing mobile_sam/). If null, uses env
 # MOBILESAM_ROOT or sibling ../MobileSAM-pytorch/MobileSAM next to this repo.
@@ -31,10 +34,6 @@ sam:
   multimask_output: false
 
 model:
-  # load_pretrained true (default): mobile_sam_checkpoint required for merge/export.
-  # load_pretrained false: random-init prompt+decoder+encoder scaffold; merge trained TinyViT in.
-  load_pretrained: true
-  mobile_sam_checkpoint: /path/to/mobile_sam.pt
   img_size: 1024
   in_chans: 3
   num_classes: 1000

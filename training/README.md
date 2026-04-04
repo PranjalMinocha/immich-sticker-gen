@@ -1,6 +1,6 @@
 # Training — unified MobileSAM workflows
 
-The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embeddings, then **assembles a full MobileSAM checkpoint** (encoder + pretrained prompt/mask decoder weights) for MLflow. **`training.mode: full_sam`** fine-tunes the full model with mask supervision. **Distill then segment** = two runs: `encoder_distill` first, then `full_sam` with `model.mobile_sam_checkpoint` set to the first run’s `mobile_sam_full.pt`. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**. Shared helpers live in [`training_core.py`](training_core.py).
+Training is controlled by **two YAML switches** (see below): **`training.mode`** and **`training.use_pretrained`** (+ path). The default path **distills a TinyViT encoder** (student always **random init** in code today) vs teacher **`.npy`**, then **assembles** a full MobileSAM checkpoint for MLflow. **`training.mode: full_sam`** fine-tunes the **entire** SAM on masks. **Distill then segment** = run `encoder_distill`, then `full_sam` with **`training.pretrained_checkpoint_path`** set to the first run’s **`mobile_sam_full.pt`**. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**.
 
 **Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, `split_teacher` vs colocated, tarball extract). **End-to-end pipeline diagram:** **[`PIPELINE.md`](PIPELINE.md)**.
 
@@ -8,15 +8,15 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 
 | File / directory | Role |
 |------------------|------|
-| [`train.py`](train.py) | **Main entry:** `training.mode` = `encoder_distill` \| `full_sam` |
+| [`train.py`](train.py) | **Main entry:** `training.mode` + `training.use_pretrained` / `pretrained_checkpoint_path` |
 | [`training_core.py`](training_core.py) | Distributed setup, flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
 | [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, colocated / `split_teacher` pairs, optional mask JSON for SAM modes |
 | [`DATA.md`](DATA.md) | Object storage sync, layouts, tar extract |
 | [`PIPELINE.md`](PIPELINE.md) | Mermaid flowchart + pipeline summary |
-| [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`model.mobile_sam_checkpoint` required) |
+| [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`training.pretrained_checkpoint_path` when `use_pretrained: true`) |
 | [`configs/tinyvit_local_sa1b.yaml`](configs/tinyvit_local_sa1b.yaml) | Local smoke-test paths |
-| [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision (use after distill by pointing `mobile_sam_checkpoint` at prior `mobile_sam_full.pt`) |
+| [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision (after distill: `pretrained_checkpoint_path` → prior `mobile_sam_full.pt`) |
 | [`requirements.txt`](requirements.txt) | Python deps (install **PyTorch** separately for your CUDA / ROCm stack) |
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
 | [`setup_host.sh`](setup_host.sh) | Chameleon host: rclone, **sync** `Raw-Data` + `Teacher-Embeddings` to local disk, extract sample tarball, optional mount |
@@ -24,20 +24,28 @@ The default path **distills a TinyViT encoder** to **ViT-H teacher `.npy`** embe
 
 **TinyViT import path:** set `mobilesam_root` in YAML, or env `MOBILESAM_ROOT` / `IMMICH_MS_ROOT`, or clone [MobileSAM-pytorch](https://github.com/ChaoningZhang/MobileSAM-pytorch) so `../MobileSAM-pytorch/MobileSAM` exists next to this repo.
 
-### `training.mode` (YAML)
+### Config: mode + pretrained weights
 
-| Mode | What it does | MLflow artifact |
-|------|----------------|-----------------|
-| `encoder_distill` | Train TinyViT (random init) vs teacher `.npy`; merge into full SAM using **`model.load_pretrained`** + **`model.mobile_sam_checkpoint`**, or **`load_pretrained: false`** for random-init SAM scaffold | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
-| `full_sam` | BCE+Dice on low-res masks; needs `data.annotation_root` + JSON. **`model.load_pretrained`**: load **`model.mobile_sam_checkpoint`** (default) or **`false`** for train-from-scratch | `checkpoints/mobile_sam_full.pt` |
+| Key | Values | Role |
+|-----|--------|------|
+| **`training.mode`** | `encoder_distill` \| `full_sam` | **Encoder path:** distill TinyViT vs teacher `.npy`, merge into a SAM scaffold. **Full path:** train all SAM components on mask loss. |
+| **`training.use_pretrained`** | `true` (default) \| `false` | **`true`:** load **`training.pretrained_checkpoint_path`** (official MobileSAM, your `mobile_sam_full.pt`, etc.). **`false`:** random-init MobileSAM scaffold (no `.pt`). |
+| **`training.pretrained_checkpoint_path`** | filesystem path | Required when **`use_pretrained: true`**. Ignored when **`false`**. |
+
+**Legacy (still supported):** `model.load_pretrained`, `model.mobile_sam_checkpoint`, or `model.pretrained_checkpoint_path` under **`model:`** — prefer **`training.*`** for new configs.
+
+**Student TinyViT** in **`encoder_distill`** is always **randomly initialized** in the current code; there is no separate “load pretrained TinyViT” flag yet. **`use_pretrained`** only controls the **SAM checkpoint** used for merge / full-model init.
+
+| `training.mode` | What it does | MLflow artifact |
+|-----------------|--------------|-----------------|
+| `encoder_distill` | TinyViT (random) vs teacher `.npy`; merge into SAM from checkpoint or scratch scaffold | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
+| `full_sam` | BCE+Dice on low-res masks; `data.annotation_root` + JSON | `checkpoints/mobile_sam_full.pt` |
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
 **`full_sam` validation previews:** after each epoch’s val IoU, rank 0 logs **`train.val_preview_samples`** (default **3**) PNGs to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
 
-**`encoder_distill` merged-SAM previews (option B):** if **`data.annotation_root`** is set (mask JSON) and **`train.val_preview_samples` > 0**, after each encoder validation rank 0 **merges the current TinyViT** into **`model.mobile_sam_checkpoint`**, runs the same box+mask visualization on the val split, and logs under **`val_previews_merged_sam/epoch_XXXX/`**. Requires the same annotations as `full_sam` for those val images.
-
-**Pretrained vs scratch (`model` block):** **`load_pretrained`** (default **`true`**) requires **`mobile_sam_checkpoint`**. Set **`load_pretrained: false`** to use a **random-init MobileSAM scaffold** (no `.pt` mount needed): applies to **`full_sam`** (train whole stack from scratch) and **`encoder_distill`** (TinyViT still random init; merged export uses random prompt/decoder unless you use pretrained).
+**`encoder_distill` merged-SAM previews (option B):** if **`data.annotation_root`** is set and **`train.val_preview_samples` > 0**, after each encoder validation rank 0 **merges the current TinyViT** into the resolved pretrained scaffold (or scratch SAM), runs box+mask viz on val, logs **`val_previews_merged_sam/epoch_XXXX/`**.
 
 ---
 
@@ -130,8 +138,9 @@ All hyperparameters and paths should come from **one YAML file** per run (no one
 
    | Key area | Examples |
    |----------|----------|
-   | `data.root` | Directory containing `sa_000000` (or your shard), e.g. rclone mount path + prefix |
-   | `output.dir` | Where checkpoints / logs go, e.g. `~/training_out` |
+   | `training.mode`, `training.use_pretrained`, `training.pretrained_checkpoint_path` | `encoder_distill` / `full_sam`; load `.pt` or train scaffold from scratch |
+   | `data.root` / `data.image_root` + `data.teacher_root` | Layout-specific paths (see `DATA.md`) |
+   | `output.dir` | Where checkpoints / logs go; use `/out` in Docker when mounting `~/training_out:/out` |
    | `mobilesam_root` | Path to `MobileSAM` package (or rely on `MOBILESAM_ROOT`) |
    | `train.epochs`, `train.batch_size`, `train.lr`, … | Experiment knobs |
    | `train.distributed_backend` | On some AMD setups use `gloo` if NCCL fails |
@@ -194,7 +203,7 @@ docker run --rm -it \
   torchrun --nproc_per_node=2 train.py --config /out/run.yaml
 ```
 
-Copy and edit **`training/configs/chameleon_docker_split_teacher.yaml`** into `/out/run.yaml` (set `model.mobile_sam_checkpoint`, MLflow URI), or set **`data.image_root`** / **`data.teacher_root`** / **`data.layout`** to match your tree under `/data`.
+Copy and edit **`training/configs/chameleon_docker_split_teacher.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.*`** to match `/data`.
 
 ---
 

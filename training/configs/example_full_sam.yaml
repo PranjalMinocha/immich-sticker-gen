@@ -3,13 +3,10 @@
 
 training:
   mode: full_sam
+  use_pretrained: true
+  pretrained_checkpoint_path: /path/to/mobile_sam.pt
 
 mobilesam_root: null
-
-model:
-  # false = random init for full SAM (no .pt load). If true, mobile_sam_checkpoint is required.
-  load_pretrained: true
-  mobile_sam_checkpoint: /path/to/mobile_sam.pt
 
 data:
   layout: colocated
