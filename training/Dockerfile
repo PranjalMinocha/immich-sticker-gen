@@ -1,5 +1,6 @@
 # Training image: Ubuntu + PyTorch ROCm 6.0 wheels + training deps.
-# Build from repository root:  docker build -f training/Dockerfile -t immich-sticker-train:rocm .
+# Build from repository root (BuildKit reuses layers on rebuild when training/ code or requirements unchanged):
+#   DOCKER_BUILDKIT=1 docker build -f training/Dockerfile -t immich-sticker-train:rocm .
 #
 # Run (example, 2 GPUs on MI100 host; data = LOCAL_DATA_ROOT from setup_host.sh):
 #   docker run --rm -it --device=/dev/kfd --device=/dev/dri --group-add video \

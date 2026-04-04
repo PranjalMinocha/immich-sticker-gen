@@ -179,12 +179,14 @@ torchrun --nproc_per_node=2 train.py --config /path/to/run.yaml
 
 ### 3.3 Docker (ROCm) — matches graded “train in container” flow
 
-Build from **repository root**:
+Build from **repository root** with **BuildKit** so **rebuilds** reuse cached layers (especially PyTorch) when only parts of the repo change:
 
 ```bash
 cd ~/immich-sticker-gen
-docker build -f training/Dockerfile -t immich-sticker-train:rocm .
+DOCKER_BUILDKIT=1 docker build -f training/Dockerfile -t immich-sticker-train:rocm .
 ```
+
+If you **only edit the mounted config** (e.g. `~/training_out/run.yaml` → `/out/run.yaml` inside the container), **start a new container**; you do **not** need to rebuild the image. Rebuild when **`training/`** code or **`training/requirements.txt`** changes.
 
 Example run: mount **staged local data** (same tree `setup_host.sh` created under `LOCAL_DATA_ROOT`, default `~/training-data`):
 
