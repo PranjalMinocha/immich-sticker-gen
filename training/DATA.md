@@ -9,49 +9,37 @@ On the GPU host, **`training/setup_host.sh`** (see README):
 3. If **`Raw-Data/sa-1b-sample.tar.gz`** exists, extracts it once into **`Raw-Data/extracted/`** (marker file avoids repeat work; delete the marker and re-run to re-extract after a new tarball).
 4. Optionally sets **`RCLONE_ENABLE_MOUNT=1`** to **FUSE-mount** the whole bucket for browsing; training I/O should use the **synced paths**, not the mount.
 
-The training container bind-mounts that directory read-only, e.g. **`-v ~/training-data:/data:ro`**, and YAML uses **`split_teacher`** with `image_root` / `teacher_root` under `/data/...` (see **`configs/chameleon_docker_split_teacher.yaml`**).
+The training container bind-mounts that directory read-only, e.g. **`-v ~/training-data:/data:ro`**. In YAML set **`data.data_dir`** and **`data.embeddings_dir`** to the matching paths under **`/data`** (see **`configs/chameleon_docker.yaml`**).
 
 ## How training reads data
 
 The training code **does not** load your entire dataset into RAM. It uses PyTorch `DataLoader` workers that **open each `.jpg` / `.npy` (and optional `.json`) on demand** from the configured paths.
-
-That means:
 
 - **Memory**: bounded roughly by batch size × image/embedding tensors, not by total corpus size.
 - **Throughput**: **local SSD** after `rclone sync` avoids per-file latency from object storage; FUSE mounts are optional and can be slower for random access.
 
 **Tar archives (`*.tar.gz`) are not read directly.** `setup_host.sh` extracts `sa-1b-sample.tar.gz` into `Raw-Data/extracted/` (or extract manually / adjust `SA1B_SAMPLE_TAR` / `RAW_EXTRACT_SUBDIR` in env).
 
-If the archive unpacks with an **extra top-level folder** (e.g. `extracted/my_prefix/sa_000000/...`), set **`data.image_root`** to include that prefix so `.../<shard>/*.jpg` resolves.
+## YAML: `data_dir` and `embeddings_dir`
 
-## Layouts
+| Key | Contents |
+|-----|----------|
+| **`data_dir`** | Folder scanned for **`*.jpg`**. Optional mask JSON for SAM modes can live here too (**`{stem}.json`** next to **`{stem}.jpg`**) or under **`annotation_root`**. |
+| **`embeddings_dir`** | Folder containing teacher **`{stem}.npy`** for each training **`{stem}.jpg`** (same basename). Can be any path (e.g. a folder under `Teacher-Embeddings/`). |
 
-### `colocated` (default)
-
-```
-data.root / <shard> / foo.jpg
-data.root / <shard> / foo.npy
-```
-
-### `split_teacher` (matches Raw-Data + Teacher-Embeddings buckets)
-
-After host prep + extract:
+Example (Docker mount `~/training-data` → `/data`):
 
 ```yaml
 data:
-  layout: split_teacher
-  image_root: /data/Raw-Data/extracted
-  teacher_root: /data/Teacher-Embeddings
-  shard_dirs: [sa_000000]
+  data_dir: /data/Raw-Data/extracted
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
 ```
 
-Requires `image_root/<shard>/<id>.jpg` and `teacher_root/<shard>/<id>.npy` with the **same stem**.
+If the tarball unpacks with an **extra directory level**, set **`data_dir`** (and **`annotation_root`** for full-SAM) to the directory that **actually contains the `.jpg` files**.
 
-### Masks for full-SAM modes / test IoU
+## Masks for full-SAM / test IoU
 
-Set `data.annotation_root` and place COCO-style JSON per image (RLE in `annotations[].segmentation` or polygon lists). Resolution:
+Set **`data.annotation_root`** and place COCO-style JSON per image (RLE in `annotations[].segmentation` or polygon lists). Lookup order (see `dataset_sa1b.resolve_annotation_json`):
 
-- `annotation_root/<shard>/<stem>.json`, or
-- `annotation_root/<stem>.json`
-
-See `dataset_sa1b.resolve_annotation_json` for lookup order.
+1. **`annotation_root/{stem}.json`**
+2. **`annotation_root/{jpg_parent_name}/{stem}.json`**

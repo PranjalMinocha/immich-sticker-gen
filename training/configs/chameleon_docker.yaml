@@ -1,6 +1,5 @@
-# Chameleon: after setup_host.sh, bind-mount LOCAL_DATA_ROOT at /data in Docker (see training/README.md).
-# layout split_teacher: JPEGs under .../Raw-Data/extracted/<shard>/ ; teacher .npy under .../Teacher-Embeddings/<shard>/
-# If the tarball adds an extra top-level directory, set image_root to that path instead.
+# Chameleon: bind-mount ~/training-data (or LOCAL_DATA_ROOT) at /data — see training/README.md.
+# data_dir = JPEGs (+ optional mask JSON). embeddings_dir = teacher .npy (same basename as each .jpg).
 
 training:
   mode: encoder_distill
@@ -10,11 +9,8 @@ training:
 mobilesam_root: null
 
 data:
-  layout: split_teacher
-  image_root: /data/Raw-Data/extracted
-  teacher_root: /data/Teacher-Embeddings
-  shard_dirs:
-    - sa_000000
+  data_dir: /data/Raw-Data/extracted
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
   image_size: 1024
   seed: 42
   train_frac: 0.7

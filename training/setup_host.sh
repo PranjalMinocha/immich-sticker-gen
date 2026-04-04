@@ -93,4 +93,4 @@ fi
 
 echo "Done. Local training data root: ${LOCAL_DATA_ROOT}"
 echo "  Docker bind: -v ${LOCAL_DATA_ROOT}:/data:ro"
-echo "  split_teacher example: image_root=/data/Raw-Data/${RAW_EXTRACT_SUBDIR}  teacher_root=/data/Teacher-Embeddings"
+echo "  flat layout example: data_dir=/data/Raw-Data/${RAW_EXTRACT_SUBDIR}  embeddings_dir=/data/Teacher-Embeddings/<your_npy_folder>"

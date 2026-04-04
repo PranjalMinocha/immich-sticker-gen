@@ -39,9 +39,9 @@ flowchart TB
     MODE -->|full_sam| FULL
   end
 
-  subgraph dataread["Data layouts"]
-    L1["colocated:\nroot/shard/*.jpg + *.npy"]
-    L2["split_teacher:\nimage_root + teacher_root"]
+  subgraph dataread["Training data"]
+    L0["data_dir:\n*.jpg (+ optional .json)"]
+    L1["embeddings_dir:\nmatching *.npy"]
   end
 
   TAR --> dataread

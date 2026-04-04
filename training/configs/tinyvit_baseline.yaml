@@ -13,12 +13,8 @@ training:
 mobilesam_root: null
 
 data:
-  # layout: colocated  -> root/shard/{jpg,npy together}
-  # layout: split_teacher -> image_root/shard/*.jpg + teacher_root/shard/*.npy (same stem)
-  layout: colocated
-  root: /data
-  shard_dirs:
-    - sa_000000
+  data_dir: /data/Raw-Data/extracted
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
   image_size: 1024
   seed: 42
   train_frac: 0.7

@@ -2,7 +2,7 @@
 
 Training is controlled by **two YAML switches** (see below): **`training.mode`** and **`training.use_pretrained`** (+ path). The default path **distills a TinyViT encoder** (student always **random init** in code today) vs teacher **`.npy`**, then **assembles** a full MobileSAM checkpoint for MLflow. **`training.mode: full_sam`** fine-tunes the **entire** SAM on masks. **Distill then segment** = run `encoder_distill`, then `full_sam` with **`training.pretrained_checkpoint_path`** set to the first run’s **`mobile_sam_full.pt`**. All runs are **config-only** and log to **[MLflow](https://mlflow.org/)** via **[`train.py`](train.py)**.
 
-**Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, `split_teacher` vs colocated, tarball extract). **End-to-end pipeline diagram:** **[`PIPELINE.md`](PIPELINE.md)**.
+**Data & object storage:** see **[`DATA.md`](DATA.md)** (`rclone sync` to local disk, optional FUSE mount, **`data_dir`** + **`embeddings_dir`**, tarball extract). **End-to-end pipeline diagram:** **[`PIPELINE.md`](PIPELINE.md)**.
 
 ## Layout
 
@@ -11,7 +11,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | [`train.py`](train.py) | **Main entry:** `training.mode` + `training.use_pretrained` / `pretrained_checkpoint_path` |
 | [`training_core.py`](training_core.py) | Distributed setup, flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
-| [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, colocated / `split_teacher` pairs, optional mask JSON for SAM modes |
+| [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, `data_dir` + `embeddings_dir` pairs, optional mask JSON for SAM modes |
 | [`DATA.md`](DATA.md) | Object storage sync, layouts, tar extract |
 | [`PIPELINE.md`](PIPELINE.md) | Mermaid flowchart + pipeline summary |
 | [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`training.pretrained_checkpoint_path` when `use_pretrained: true`) |
@@ -20,7 +20,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | [`requirements.txt`](requirements.txt) | Python deps (install **PyTorch** separately for your CUDA / ROCm stack) |
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
 | [`setup_host.sh`](setup_host.sh) | Chameleon host: rclone, **sync** `Raw-Data` + `Teacher-Embeddings` to local disk, extract sample tarball, optional mount |
-| [`configs/chameleon_docker_split_teacher.yaml`](configs/chameleon_docker_split_teacher.yaml) | Docker paths when data is mounted at `/data` |
+| [`configs/chameleon_docker.yaml`](configs/chameleon_docker.yaml) | Docker paths when data is mounted at `/data` |
 
 **TinyViT import path:** set `mobilesam_root` in YAML, or env `MOBILESAM_ROOT` / `IMMICH_MS_ROOT`, or clone [MobileSAM-pytorch](https://github.com/ChaoningZhang/MobileSAM-pytorch) so `../MobileSAM-pytorch/MobileSAM` exists next to this repo.
 
@@ -99,7 +99,7 @@ ls "${LOCAL_DATA_ROOT:-$HOME/training-data}/Raw-Data/extracted" | head
 ls "${LOCAL_DATA_ROOT:-$HOME/training-data}/Teacher-Embeddings" | head
 ```
 
-For Docker, bind-mount that directory at **`/data`** and use **`configs/chameleon_docker_split_teacher.yaml`** or equivalent `data.image_root` / `data.teacher_root` paths.
+For Docker, bind-mount that directory at **`/data`** and set **`data.data_dir`** and **`data.embeddings_dir`** (see **`configs/chameleon_docker.yaml`** and **`DATA.md`**).
 
 ### 1.4 Clone repo and MobileSAM on the instance
 
@@ -137,7 +137,7 @@ All hyperparameters and paths should come from **one YAML file** per run (no one
    | Key area | Examples |
    |----------|----------|
    | `training.mode`, `training.use_pretrained`, `training.pretrained_checkpoint_path` | `encoder_distill` / `full_sam`; load `.pt` or train scaffold from scratch |
-   | `data.root` / `data.image_root` + `data.teacher_root` | Layout-specific paths (see `DATA.md`) |
+   | `data.data_dir` + `data.embeddings_dir` (see `DATA.md`) |
    | `output.dir` | Where checkpoints / logs go; use `/out` in Docker when mounting `~/training_out:/out` |
    | `mobilesam_root` | Path to `MobileSAM` package (or rely on `MOBILESAM_ROOT`) |
    | `train.epochs`, `train.batch_size`, `train.lr`, … | Experiment knobs |
@@ -203,7 +203,7 @@ docker run --rm -it \
   torchrun --nproc_per_node=2 train.py --config /out/run.yaml
 ```
 
-Copy and edit **`training/configs/chameleon_docker_split_teacher.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.*`** to match `/data`.
+Copy and edit **`training/configs/chameleon_docker.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.data_dir`** / **`data.embeddings_dir`** to match `/data`.
 
 ---
 

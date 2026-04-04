@@ -10,9 +10,9 @@
 #     -e MOBILESAM_ROOT=/mobilesam \
 #     -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
 #     immich-sticker-train:rocm \
-#     torchrun --nproc_per_node=2 train.py --config configs/chameleon_docker_split_teacher.yaml
+#     torchrun --nproc_per_node=2 train.py --config configs/chameleon_docker.yaml
 #
-# Use split_teacher YAML (image_root/teacher_root under /data) or colocated layout under /data.
+# Set data.data_dir and data.embeddings_dir under /data — see DATA.md.
 
 FROM ubuntu:22.04
 

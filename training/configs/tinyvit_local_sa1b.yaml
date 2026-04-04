@@ -1,4 +1,4 @@
-# Example for local workspace: sibling MobileSAM-pytorch with sa_000000.
+# Local example: set data_dir (JPEGs) and embeddings_dir (teacher .npy).
 # Usage: python train.py --config configs/tinyvit_local_sa1b.yaml
 
 training:
@@ -9,10 +9,8 @@ training:
 mobilesam_root: null
 
 data:
-  layout: colocated
-  root: /home/cc/sa-1b-workspace/MobileSAM-pytorch
-  shard_dirs:
-    - sa_000000
+  data_dir: /path/to/extracted
+  embeddings_dir: /path/to/embeddings_folder
   image_size: 1024
   seed: 42
   train_frac: 0.7

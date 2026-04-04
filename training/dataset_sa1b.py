@@ -1,8 +1,8 @@
 """
 SA-1B-style data: encoder distillation (.jpg + teacher .npy) and optional mask JSON for full-SAM training.
-Layouts:
-  - colocated: data.root / shard / *.jpg with *.npy beside each .jpg
-  - split_teacher: data.image_root/shard/*.jpg + data.teacher_root/shard/{stem}.npy
+
+Data paths: **data.data_dir** (JPEGs + optional mask JSON beside them) and **data.embeddings_dir**
+(teacher **{stem}.npy** matching each **{stem}.jpg**). See training/DATA.md.
 
 Training reads files via the filesystem (e.g. rclone mount). It does not load the full dataset into RAM;
 throughput depends on mount latency. Extract tar archives to a directory first — see training/DATA.md.
@@ -28,42 +28,36 @@ except ImportError:
 
 
 def collect_encoder_pairs(data_cfg: dict) -> List[Tuple[Path, Path]]:
-    layout = data_cfg.get("layout", "colocated")
-    shard_dirs: Sequence[str] = data_cfg["shard_dirs"]
-    pairs: List[Tuple[Path, Path]] = []
+    if "data_dir" not in data_cfg or "embeddings_dir" not in data_cfg:
+        if any(
+            k in data_cfg
+            for k in ("root", "shard_dirs", "image_root", "teacher_root", "layout")
+        ):
+            raise ValueError(
+                "Training expects data.data_dir and data.embeddings_dir only. "
+                "Remove layout, root, shard_dirs, image_root, and teacher_root (see training/DATA.md)."
+            )
+        raise ValueError("data.data_dir and data.embeddings_dir are required.")
 
-    if layout == "colocated":
-        root = Path(data_cfg["root"]).expanduser().resolve()
-        for d in shard_dirs:
-            folder = root / d
-            if not folder.is_dir():
-                raise FileNotFoundError(f"Data shard not found: {folder}")
-            for p in sorted(folder.iterdir()):
-                if p.suffix.lower() != ".jpg":
-                    continue
-                npy = p.with_suffix(".npy")
-                if npy.is_file():
-                    pairs.append((p, npy))
-    elif layout == "split_teacher":
-        ir = Path(data_cfg["image_root"]).expanduser().resolve()
-        tr = Path(data_cfg["teacher_root"]).expanduser().resolve()
-        for d in shard_dirs:
-            im_folder = ir / d
-            if not im_folder.is_dir():
-                raise FileNotFoundError(f"Image shard not found: {im_folder}")
-            for p in sorted(im_folder.iterdir()):
-                if p.suffix.lower() != ".jpg":
-                    continue
-                npy = tr / d / f"{p.stem}.npy"
-                if npy.is_file():
-                    pairs.append((p, npy))
-    else:
-        raise ValueError(f"Unknown data.layout: {layout}")
+    dd = Path(data_cfg["data_dir"]).expanduser().resolve()
+    ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
+    if not dd.is_dir():
+        raise FileNotFoundError(f"data_dir not found: {dd}")
+    if not ed.is_dir():
+        raise FileNotFoundError(f"embeddings_dir not found: {ed}")
+
+    pairs: List[Tuple[Path, Path]] = []
+    for p in sorted(dd.iterdir()):
+        if p.suffix.lower() != ".jpg":
+            continue
+        npy = ed / f"{p.stem}.npy"
+        if npy.is_file():
+            pairs.append((p, npy))
 
     if not pairs:
         raise RuntimeError(
-            "No training samples found. For split_teacher, check image_root, teacher_root, shard_dirs, "
-            "and that .npy names match .jpg stems."
+            "No training samples found. Check data_dir, embeddings_dir, and that each .jpg stem "
+            "has a matching .npy in embeddings_dir."
         )
     return pairs
 
@@ -236,13 +230,10 @@ def combined_mask_from_json(data: dict, out_h: int, out_w: int) -> np.ndarray:
 
 def resolve_annotation_json(jpg: Path, data_cfg: dict) -> Path:
     root = Path(data_cfg["annotation_root"]).expanduser().resolve()
-    shard_dirs: Sequence[str] = data_cfg["shard_dirs"]
-    parent = jpg.parent.name
-    if parent in shard_dirs:
-        cand = root / parent / f"{jpg.stem}.json"
-        if cand.is_file():
-            return cand
     cand = root / f"{jpg.stem}.json"
+    if cand.is_file():
+        return cand
+    cand = root / jpg.parent.name / f"{jpg.stem}.json"
     if cand.is_file():
         return cand
     raise FileNotFoundError(f"No annotation JSON for {jpg} under {root}")

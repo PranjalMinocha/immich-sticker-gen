@@ -9,10 +9,9 @@ training:
 mobilesam_root: null
 
 data:
-  layout: colocated
-  root: /data
-  shard_dirs: [sa_000000]
-  annotation_root: /data/annotations
+  data_dir: /data/Raw-Data/extracted
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
+  annotation_root: /data/Raw-Data/extracted
   image_size: 1024
   seed: 42
   train_frac: 0.7
