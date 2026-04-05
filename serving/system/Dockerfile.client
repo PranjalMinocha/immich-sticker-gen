@@ -13,7 +13,6 @@ RUN pip install --no-cache-dir \
     requests==2.31.0 \
     tritonclient[http]==2.46.0
 
-# shared scripts — download_data.py is reused from the main experiment
 COPY serving_benchmark.py /app/serving_benchmark.py
 
 CMD ["python", "serving_benchmark.py"]

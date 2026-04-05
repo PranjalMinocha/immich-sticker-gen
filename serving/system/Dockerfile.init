@@ -1,22 +1,26 @@
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+FROM python:3.12-slim
 
-WORKDIR /app
+RUN apt-get update --yes && \
+    apt-get install --yes --no-install-recommends libgl1 libglib2.0-0 git && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir \
+    torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir \
     git+https://github.com/ChaoningZhang/MobileSAM.git \
-    onnx==1.16.0 \
-    opencv-python-headless==4.9.0.80 \
-    Pillow==10.3.0 \
-    numpy==1.26.4 \
-    requests==2.31.0 \
-    pycocotools==2.0.7 \
-    timm==0.9.16
+    onnx \
+    onnxscript \
+    opencv-python-headless \
+    Pillow \
+    numpy \
+    requests \
+    pycocotools \
+    timm
 
-COPY system/export_onnx.py  /app/export_onnx.py
+# context is the parent dir
 COPY model/download_data.py  /app/download_data.py
+COPY system/export_onnx.py  /app/export_onnx.py
 
+WORKDIR /app
 CMD ["sh", "-c", "python /app/download_data.py && python /app/export_onnx.py"]

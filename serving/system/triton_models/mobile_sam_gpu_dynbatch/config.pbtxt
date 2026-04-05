@@ -1,0 +1,23 @@
+# Stage 5: 1 GPU instance + dynamic batching
+# Shows bursty Poisson arrivals absorbed without over-provisioning
+name: "mobile_sam_gpu_dynbatch"
+backend: "python"
+max_batch_size: 8
+
+input [
+  { name: "INPUT_IMAGE" data_type: TYPE_STRING dims: [1] },
+  { name: "BOX"         data_type: TYPE_FP32   dims: [4] }
+]
+
+output [
+  { name: "MASK"       data_type: TYPE_STRING dims: [1] },
+  { name: "ENCODER_MS" data_type: TYPE_FP32   dims: [1] },
+  { name: "DECODER_MS" data_type: TYPE_FP32   dims: [1] }
+]
+
+instance_group [{ count: 1, kind: KIND_GPU, gpus: [0] }]
+
+dynamic_batching {
+  preferred_batch_size: [2, 4, 8]
+  max_queue_delay_microseconds: 5000
+}

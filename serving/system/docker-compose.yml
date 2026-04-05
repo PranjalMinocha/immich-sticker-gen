@@ -1,6 +1,42 @@
 version: "3.9"
 
-# ── shared env for all benchmark clients ─────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Experiment progression:
+#
+#   Stage 1 — FastAPI + ONNX on CPU (baseline)
+#             fastapi_serial, fastapi_concurrent, fastapi_poisson
+#
+#   Stage 2 — Triton GPU, 1 instance, no dynamic batching
+#             triton_gpu1_serial, triton_gpu1_concurrent, triton_gpu1_poisson
+#
+#   Stage 3 — Triton GPU, 2 instances, no dynamic batching
+#             triton_gpu2_concurrent, triton_gpu2_poisson
+#
+#   Stage 4 — Triton GPU, 1 instance + dynamic batching
+#             triton_dynbatch_poisson
+#
+# Run:
+#   docker compose up init
+#   docker compose up fastapi_server triton_server -d
+#   docker compose run --rm fastapi_serial && \
+#   docker compose run --rm fastapi_concurrent && \
+#   docker compose run --rm fastapi_poisson && \
+#   docker compose run --rm triton_gpu1_serial && \
+#   docker compose run --rm triton_gpu1_concurrent && \
+#   docker compose run --rm triton_gpu1_poisson && \
+#   docker compose run --rm triton_gpu2_concurrent && \
+#   docker compose run --rm triton_gpu2_poisson && \
+#   docker compose run --rm triton_dynbatch_poisson
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-gpu: &gpu
+  devices:
+    - /dev/kfd
+    - /dev/dri
+  group_add:
+    - video
+    - render
+
 x-client-base: &client-base
   build:
     context: .
@@ -8,46 +44,49 @@ x-client-base: &client-base
   volumes:
     - serving_data:/data
   environment:
-    DATA_DIR:           /data
-    FASTAPI_URL:        http://fastapi_server:8000/predict
-    TRITON_URL:         triton_server:8000
-    TRITON_MODEL:       mobile_sam
-    NUM_SERIAL_TRIALS:  "100"
-    NUM_CONCURRENT:     "8"
-    CONCURRENT_REQS:    "200"
-    RATE_REQS_PER_SEC:  "5.0"
-    RATE_DURATION_SEC:  "30.0"
+    DATA_DIR:          /data
+    NUM_SERIAL_TRIALS: "100"
+    NUM_CONCURRENT:    "8"
+    CONCURRENT_REQS:   "200"
+    RATE_REQS_PER_SEC: "5.0"
+    RATE_DURATION_SEC: "30.0"
 
 services:
 
-  # ── 1. Download data + export ONNX (runs once) ────────────────────────────
+  # ── init: download data + export ONNX models (run once) ───────────────────
   init:
     build:
       context: ..
-      dockerfile: serving/Dockerfile.init
+      dockerfile: system/Dockerfile.init
     volumes:
       - serving_data:/data
     environment:
       DATA_DIR:  /data
       MODEL_DIR: /data
 
-  # ── 2. FastAPI server ──────────────────────────────────────────────────────
+  # ── Stage 1: FastAPI server (CPU) ─────────────────────────────────────────
   fastapi_server:
+    <<: *gpu
     build:
       context: ..
-      dockerfile: serving/fastapi_app/Dockerfile
+      dockerfile: system/fastapi_app/Dockerfile
+    entrypoint: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - serving_data:/data
     environment:
       MODEL_DIR: /data
+      MIOPEN_FIND_MODE: "1"
+      MIOPEN_USER_DB_PATH: /tmp/miopen
+      MIOPEN_SYSTEM_DB_PATH: /tmp/miopen
     ports:
       - "8000:8000"
     depends_on:
       init:
         condition: service_completed_successfully
 
-  # ── 3. Triton server ───────────────────────────────────────────────────────
+  # ── Stage 2-4: Triton server (GPU, loads all 3 model variants) ────────────
   triton_server:
+    <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile.triton
@@ -56,6 +95,9 @@ services:
       - ./triton_models:/models
     environment:
       MODEL_DIR: /data
+      MIOPEN_FIND_MODE: "1"
+      MIOPEN_USER_DB_PATH: /tmp/miopen
+      MIOPEN_SYSTEM_DB_PATH: /tmp/miopen
     ports:
       - "8001:8000"
       - "8002:8001"
@@ -64,7 +106,7 @@ services:
       init:
         condition: service_completed_successfully
 
-  # ── FastAPI experiments ────────────────────────────────────────────────────
+  # ── Stage 1 clients: FastAPI CPU ──────────────────────────────────────────
   fastapi_serial:
     <<: *client-base
     environment:
@@ -82,15 +124,6 @@ services:
       NUM_CONCURRENT:  "8"
       CONCURRENT_REQS: "200"
 
-  fastapi_constant_rate:
-    <<: *client-base
-    environment:
-      DATA_DIR:          /data
-      FASTAPI_URL:       http://fastapi_server:8000/predict
-      EXPERIMENT:        fastapi_constant_rate
-      RATE_REQS_PER_SEC: "5.0"
-      RATE_DURATION_SEC: "30.0"
-
   fastapi_poisson:
     <<: *client-base
     environment:
@@ -100,46 +133,67 @@ services:
       RATE_REQS_PER_SEC: "5.0"
       RATE_DURATION_SEC: "30.0"
 
-  # ── Triton experiments ─────────────────────────────────────────────────────
-  triton_serial:
+  # ── Stage 2 clients: Triton GPU, 1 instance ───────────────────────────────
+  triton_gpu1_serial:
     <<: *client-base
     environment:
       DATA_DIR:          /data
       TRITON_URL:        triton_server:8000
-      TRITON_MODEL:      mobile_sam
+      TRITON_MODEL:      mobile_sam_gpu_1
       EXPERIMENT:        triton_serial
       NUM_SERIAL_TRIALS: "100"
 
-  triton_concurrent:
+  triton_gpu1_concurrent:
     <<: *client-base
     environment:
       DATA_DIR:        /data
       TRITON_URL:      triton_server:8000
-      TRITON_MODEL:    mobile_sam
+      TRITON_MODEL:    mobile_sam_gpu_1
       EXPERIMENT:      triton_concurrent
       NUM_CONCURRENT:  "8"
       CONCURRENT_REQS: "200"
 
-  triton_constant_rate:
+  triton_gpu1_poisson:
     <<: *client-base
     environment:
       DATA_DIR:          /data
       TRITON_URL:        triton_server:8000
-      TRITON_MODEL:      mobile_sam
-      EXPERIMENT:        triton_constant_rate
-      RATE_REQS_PER_SEC: "5.0"
-      RATE_DURATION_SEC: "30.0"
-
-  triton_poisson:
-    <<: *client-base
-    environment:
-      DATA_DIR:          /data
-      TRITON_URL:        triton_server:8000
-      TRITON_MODEL:      mobile_sam
+      TRITON_MODEL:      mobile_sam_gpu_1
       EXPERIMENT:        triton_poisson
       RATE_REQS_PER_SEC: "5.0"
       RATE_DURATION_SEC: "30.0"
 
-# ── shared volume ─────────────────────────────────────────────────────────────
+  # ── Stage 3 clients: Triton GPU, 2 instances ──────────────────────────────
+  triton_gpu2_concurrent:
+    <<: *client-base
+    environment:
+      DATA_DIR:        /data
+      TRITON_URL:      triton_server:8000
+      TRITON_MODEL:    mobile_sam_gpu_2
+      EXPERIMENT:      triton_concurrent
+      NUM_CONCURRENT:  "8"
+      CONCURRENT_REQS: "200"
+
+  triton_gpu2_poisson:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      TRITON_URL:        triton_server:8000
+      TRITON_MODEL:      mobile_sam_gpu_2
+      EXPERIMENT:        triton_poisson
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
+  # ── Stage 4 clients: Triton GPU, 1 instance + dynamic batching ────────────
+  triton_dynbatch_poisson:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      TRITON_URL:        triton_server:8000
+      TRITON_MODEL:      mobile_sam_gpu_dynbatch
+      EXPERIMENT:        triton_poisson
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
 volumes:
   serving_data:
