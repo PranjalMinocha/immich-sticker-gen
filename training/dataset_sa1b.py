@@ -147,10 +147,14 @@ def collect_encoder_pairs(data_cfg: dict) -> List[Tuple[Path, Path]]:
 
     dd = Path(data_cfg["data_dir"]).expanduser().resolve()
     ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
+    _path_hint = (
+        " YAML often uses /data/... inside Docker; on the host use the real synced tree "
+        "(e.g. ~/training-data/Raw-Data/extracted from setup_host.sh)."
+    )
     if not dd.is_dir():
-        raise FileNotFoundError(f"data_dir not found: {dd}")
+        raise FileNotFoundError(f"data_dir not found: {dd}.{_path_hint}")
     if not ed.is_dir():
-        raise FileNotFoundError(f"embeddings_dir not found: {ed}")
+        raise FileNotFoundError(f"embeddings_dir not found: {ed}.{_path_hint}")
 
     pairs: List[Tuple[Path, Path]] = []
     for p in sorted(dd.iterdir()):

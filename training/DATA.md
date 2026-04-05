@@ -11,6 +11,19 @@ On the GPU host, **`training/setup_host.sh`** (see README):
 
 The training container bind-mounts that directory read-only, e.g. **`-v ~/training-data:/data:ro`**. In YAML set **`data.data_dir`** and **`data.embeddings_dir`** to the matching paths under **`/data`** (see **`configs/chameleon_docker.yaml`**).
 
+### Bare metal on the instance (no Docker)
+
+**`/data/...` does not exist** unless you create it (e.g. `sudo mkdir -p /data && sudo ln -s "$HOME/training-data" /data`). Otherwise copy a config that uses **host paths**, for example:
+
+```yaml
+data:
+  data_dir: /home/cc/training-data/Raw-Data/extracted
+  embeddings_dir: /home/cc/training-data/Teacher-Embeddings/sa_000000
+  annotation_root: /home/cc/training-data/Raw-Data/extracted   # or wherever your JSON lives
+```
+
+Adjust **`cc`** and shard folder names to match **`setup_host.sh`** / **`LOCAL_DATA_ROOT`**. Use the **same paths** for `python3 prebuild_*.py --config ...` and for `train.py`.
+
 ## How training reads data
 
 The training code **does not** load your entire dataset into RAM. It uses PyTorch `DataLoader` workers that **open each `.jpg` / `.npy` (and optional `.json`) on demand** from the configured paths.
