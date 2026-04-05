@@ -45,3 +45,22 @@ Lookup order (see `dataset_sa1b.resolve_annotation_json`):
 
 1. **`annotation_root/{stem}.json`**
 2. **`annotation_root/{jpg_parent_name}/{stem}.json`**
+
+## Precomputed SAM instance index (optional, faster startup)
+
+Building the per-instance list scans every JPG and decodes every mask once; that can take a long time. You can **precompute once** and reuse:
+
+- **Default file** (auto-loaded if present): **`{data_dir}/sam_instance_index/sam_instances_v1.json`**
+- **Or** set **`data.sam_instance_index`** in YAML to an explicit path.
+
+The index must match **`data_dir`**, **`embeddings_dir`**, **`annotation_root`**, and the same **split** definition as training (**`data.split_manifest`** path, or **`seed` + `train_frac` / `val_frac` / `test_frac`**). If you change any of those or the masks, rebuild the file.
+
+**One-off script** (not in git — see repo **`.gitignore`**): copy **`training/prebuild_sam_instance_index.py`** onto the host (or create it from your checkout before it was ignored), then:
+
+```bash
+cd ~/immich-sticker-gen/training
+python3 prebuild_sam_instance_index.py --config ~/training_out/run.yaml
+# optional: --out /data/Raw-Data/extracted/sam_instance_index/sam_instances_v1.json
+```
+
+Use the **same YAML** as `train.py` so paths and split rules match. After the JSON exists under **`data_dir`**, Docker training starts without rescanning all images.

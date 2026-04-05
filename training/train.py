@@ -380,7 +380,7 @@ def run_encoder_distill(
         and data_cfg.get("annotation_root")
         and len(jpg_splits["val"]) > 0
     ):
-        pv_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val_preview")
+        pv_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val_preview", split="val")
         bs_pv = min(4, max(len(pv_ds), 1))
         sam_enc_val_loader = DataLoader(
             pv_ds,
@@ -619,9 +619,9 @@ def run_full_sam(
     batch_size = int(train_cfg.get("batch_size", 4))
     num_workers = int(data_cfg.get("num_workers", 4))
 
-    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train")
-    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val")
-    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test")
+    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train", split="train")
+    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val", split="val")
+    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test", split="test")
     sam_train = DataLoader(
         train_ds,
         batch_size=batch_size,

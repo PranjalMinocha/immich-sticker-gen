@@ -29,6 +29,109 @@ try:
 except ImportError:
     mask_util = None
 
+SAM_INSTANCE_INDEX_VERSION = 1
+DEFAULT_SAM_INSTANCE_INDEX_REL = Path("sam_instance_index") / "sam_instances_v1.json"
+
+
+def resolved_sam_instance_index_path(data_cfg: dict) -> Path | None:
+    """
+    Path to precomputed instance list if configured and file exists.
+    - data.sam_instance_index: explicit file (required to exist if set)
+    - else: data_dir/sam_instance_index/sam_instances_v1.json if present
+    """
+    raw = data_cfg.get("sam_instance_index")
+    if raw:
+        p = Path(raw).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"data.sam_instance_index not found: {p}")
+        return p
+    dd = Path(data_cfg["data_dir"]).expanduser().resolve()
+    cand = (dd / DEFAULT_SAM_INSTANCE_INDEX_REL).resolve()
+    if cand.is_file():
+        return cand
+    return None
+
+
+def _jpg_rel_to_data_dir(jpg: Path, data_dir: Path) -> str:
+    try:
+        return str(jpg.resolve().relative_to(data_dir.resolve()))
+    except ValueError:
+        return str(jpg.resolve())
+
+
+def _jpg_from_rel(rel: str, data_dir: Path) -> Path:
+    p = Path(rel)
+    if p.is_absolute():
+        return p.resolve()
+    return (data_dir / p).resolve()
+
+
+def load_sam_instance_index_entries(
+    index_path: Path, data_cfg: dict, split: str
+) -> List[Tuple[Path, int]]:
+    """Load (jpg_path, ann_idx) list for a split; validates paths match current data_cfg."""
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    if int(payload.get("format_version", -1)) != SAM_INSTANCE_INDEX_VERSION:
+        raise ValueError(f"Unsupported sam_instance_index format in {index_path}")
+
+    dd = Path(data_cfg["data_dir"]).expanduser().resolve()
+    ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
+    ar = Path(data_cfg["annotation_root"]).expanduser().resolve()
+
+    def _must_match(name: str, want: Path, got_raw: str) -> None:
+        got = Path(got_raw).expanduser().resolve()
+        if got != want:
+            raise ValueError(
+                f"sam_instance_index {name} mismatch: index has {got}, config has {want}. "
+                "Rebuild the index or fix data paths."
+            )
+
+    _must_match("data_dir", dd, payload["data_dir"])
+    _must_match("embeddings_dir", ed, payload["embeddings_dir"])
+    _must_match("annotation_root", ar, payload["annotation_root"])
+
+    cfg_manifest = data_cfg.get("split_manifest")
+    cfg_m_path = Path(cfg_manifest).resolve() if cfg_manifest else None
+    idx_manifest_raw = payload.get("split_manifest")
+    idx_m_path = Path(idx_manifest_raw).resolve() if idx_manifest_raw else None
+
+    if idx_m_path is not None:
+        if cfg_m_path is None or cfg_m_path != idx_m_path:
+            raise ValueError(
+                f"sam_instance_index was built with split_manifest={idx_m_path}; "
+                f"training data.split_manifest must be the same path (got {cfg_m_path})."
+            )
+    else:
+        seed = int(data_cfg.get("seed", 42))
+        tf = float(data_cfg.get("train_frac", 0.7))
+        vf = float(data_cfg.get("val_frac", 0.1))
+        xf = float(data_cfg.get("test_frac", 0.2))
+        if cfg_m_path is not None:
+            raise ValueError(
+                "sam_instance_index was built without split_manifest but training has data.split_manifest set. "
+                "Rebuild the index with the same manifest, or drop split_manifest for training."
+            )
+        p_seed = payload.get("seed")
+        if p_seed is None:
+            raise ValueError("sam_instance_index missing seed (expected when built without split_manifest). Rebuild.")
+        if (
+            int(p_seed) != seed
+            or abs(float(payload.get("train_frac", -1.0)) - tf) > 1e-6
+            or abs(float(payload.get("val_frac", -1.0)) - vf) > 1e-6
+            or abs(float(payload.get("test_frac", -1.0)) - xf) > 1e-6
+        ):
+            raise ValueError(
+                "sam_instance_index seed/train_frac/val_frac/test_frac do not match data config. Rebuild the index."
+            )
+
+    sp = payload.get("splits", {}).get(split)
+    if not sp:
+        raise ValueError(f"No splits[{split!r}] in {index_path}")
+    out: List[Tuple[Path, int]] = []
+    for row in sp:
+        out.append((_jpg_from_rel(row["jpg_rel"], dd), int(row["ann_idx"])))
+    return out
+
 
 def collect_encoder_pairs(data_cfg: dict) -> List[Tuple[Path, Path]]:
     if "data_dir" not in data_cfg or "embeddings_dir" not in data_cfg:
@@ -354,15 +457,35 @@ class SA1BSamDataset(Dataset):
         img_size: int = 1024,
         low_res: int = 256,
         progress_label: str = "",
+        split: str | None = None,
     ) -> None:
         self.data_cfg = data_cfg
         self.img_size = img_size
         self.low_res = low_res
-        self.samples = list_instance_samples(
-            [Path(p) for p in jpg_paths],
-            data_cfg,
-            progress_label=progress_label,
-        )
+        label = f" [{progress_label}]" if progress_label else ""
+        idx_path = resolved_sam_instance_index_path(data_cfg)
+        if idx_path is not None:
+            if not split:
+                raise ValueError(
+                    "Precomputed SAM instance index is in use; pass split='train'|'val'|'test' to SA1BSamDataset."
+                )
+            print(
+                f"SAM dataset{label}: loading {split} split from {idx_path} …",
+                file=sys.stderr,
+                flush=True,
+            )
+            self.samples = load_sam_instance_index_entries(idx_path, data_cfg, split)
+            print(
+                f"SAM dataset{label}: loaded {len(self.samples)} instance samples (cached index)",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            self.samples = list_instance_samples(
+                [Path(p) for p in jpg_paths],
+                data_cfg,
+                progress_label=progress_label,
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -472,9 +595,9 @@ def build_sam_loaders(
 ):
     if not data_cfg.get("annotation_root"):
         return None, None, None
-    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train")
-    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val")
-    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test")
+    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train", split="train")
+    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val", split="val")
+    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test", split="test")
 
     def collate(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return batch
