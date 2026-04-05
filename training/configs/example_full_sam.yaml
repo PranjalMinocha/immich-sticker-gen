@@ -25,6 +25,7 @@ sam:
 
 train:
   epochs: 4
+  # full_sam indexes one row per annotation instance; batches/step count >> image count when JSONs are multi-object
   batch_size: 4
   optimizer: adamw
   learning_rate: 0.0001

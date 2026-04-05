@@ -127,7 +127,7 @@ def log_sam_val_preview_artifacts(
 ) -> None:
     """
     Save validation images with box prompt, predicted mask overlay, and GT contour; log to MLflow.
-    Prompt matches training: axis-aligned box from GT mask (see SA1BSamDataset).
+    Prompt matches training: COCO bbox on the instance (or tight box on instance mask); see SA1BSamDataset.
     """
     if num_samples <= 0:
         return
@@ -152,6 +152,7 @@ def log_sam_val_preview_artifacts(
         gt_t = rec["low_res_mask_gt"]
         path_str = str(rec.get("path", f"sample_{i}"))
         stem = Path(path_str).stem
+        ann_idx = rec.get("ann_idx")
 
         one = [
             {
@@ -188,7 +189,8 @@ def log_sam_val_preview_artifacts(
         x0, y0, x1, y1 = int(bx[0]), int(bx[1]), int(bx[2]), int(bx[3])
         cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 180, 255), 2)
 
-        caption = f"{stem} | prompt: box [{x0},{y0},{x1},{y1}] (xyxy, resized)"
+        ann_part = f" ann={ann_idx}" if ann_idx is not None else ""
+        caption = f"{stem}{ann_part} | box [{x0},{y0},{x1},{y1}] (xyxy, resized)"
         cv2.putText(
             vis,
             caption[:120],
@@ -200,7 +202,8 @@ def log_sam_val_preview_artifacts(
             cv2.LINE_AA,
         )
 
-        out_path = stage / f"sample_{i:02d}_{stem}.png"
+        suffix = f"_a{ann_idx}" if ann_idx is not None else ""
+        out_path = stage / f"sample_{i:02d}_{stem}{suffix}.png"
         cv2.imwrite(str(out_path), vis)
         mlflow.log_artifact(str(out_path), artifact_path=art_prefix)
 

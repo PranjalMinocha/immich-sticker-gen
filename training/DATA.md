@@ -39,7 +39,9 @@ If the tarball unpacks with an **extra directory level**, set **`data_dir`** (an
 
 ## Masks for full-SAM / test IoU
 
-Set **`data.annotation_root`** and place COCO-style JSON per image (RLE in `annotations[].segmentation` or polygon lists). Lookup order (see `dataset_sa1b.resolve_annotation_json`):
+Set **`data.annotation_root`** and place COCO-style JSON per image (RLE in `annotations[].segmentation` or polygon lists). **`full_sam` training uses one row per annotation**: each step supervises a single instance mask with a box prompt from that annotation’s COCO **`bbox`** (or, if missing, a tight box on the decoded mask). Image-level train/val/test splits are unchanged; the dataset length is the total number of valid instances across images in each split.
+
+Lookup order (see `dataset_sa1b.resolve_annotation_json`):
 
 1. **`annotation_root/{stem}.json`**
 2. **`annotation_root/{jpg_parent_name}/{stem}.json`**

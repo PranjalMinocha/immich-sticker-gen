@@ -11,7 +11,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | [`train.py`](train.py) | **Main entry:** `training.mode` + `training.use_pretrained` / `pretrained_checkpoint_path` |
 | [`training_core.py`](training_core.py) | flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
-| [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, `data_dir` + `embeddings_dir` pairs, optional mask JSON for SAM modes |
+| [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, `data_dir` + `embeddings_dir` pairs, per-instance mask JSON for `full_sam` |
 | [`DATA.md`](DATA.md) | Object storage sync, layouts, tar extract |
 | [`PIPELINE.md`](PIPELINE.md) | Mermaid flowchart + pipeline summary |
 | [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`training.pretrained_checkpoint_path` when `use_pretrained: true`) |
@@ -37,11 +37,11 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | `training.mode` | What it does | MLflow artifact |
 |-----------------|--------------|-----------------|
 | `encoder_distill` | TinyViT (random) vs teacher `.npy`; merge into SAM from checkpoint or scratch scaffold | `checkpoints/mobile_sam_full.pt` (+ split manifest) |
-| `full_sam` | BCE+Dice on low-res masks; `data.annotation_root` + JSON | `checkpoints/mobile_sam_full.pt` |
+| `full_sam` | BCE+Dice on low-res masks; **per-instance** supervision (`annotation_root` + JSON: one sample per `annotations[]` with a non-empty mask) | `checkpoints/mobile_sam_full.pt` |
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
-**`full_sam` validation previews:** after each epoch’s val IoU, **`train.val_preview_samples`** (default **3**) PNGs are logged to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same bbox-from-GT as training), predicted mask (green overlay), GT mask (red contour). Set **`val_preview_samples: 0`** to turn off.
+**`full_sam` validation previews:** after each epoch’s val IoU, **`train.val_preview_samples`** (default **3**) PNGs are logged to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same as training: COCO bbox or tight instance mask), predicted mask (green overlay), GT mask (red contour); filenames include **`ann=`** when applicable. Set **`val_preview_samples: 0`** to turn off. Steps per epoch scale with **instance count**, not image count—tune **`train.batch_size`** accordingly.
 
 **`encoder_distill` merged-SAM previews:** with **`data.annotation_root`** and **`train.val_preview_samples` > 0**, after val metrics the run merges TinyViT into the SAM scaffold and logs **`val_previews_merged_sam/epoch_XXXX/`**.
 
@@ -218,7 +218,7 @@ Adjust `tinyvit_local_sa1b.yaml` for your paths.
 
 ## 5. How long a run takes
 
-Depends on **image count**, **epochs**, **batch size**, and **GPU count**. Use tqdm’s **epoch 1** wall time × `epochs` as a rough estimate.
+Depends on **dataset size** (for `full_sam`, **annotation instance** count), **epochs**, **batch size**, and **GPU**. Use tqdm’s **epoch 1** wall time × `epochs` as a rough estimate.
 
 | Scenario | Ballpark |
 |----------|----------|

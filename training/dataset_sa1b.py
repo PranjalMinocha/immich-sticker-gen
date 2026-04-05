@@ -1,8 +1,10 @@
 """
-SA-1B-style data: encoder distillation (.jpg + teacher .npy) and optional mask JSON for full-SAM training.
+SA-1B-style data: encoder distillation (.jpg + teacher .npy) and mask JSON for full-SAM training.
 
-Data paths: **data.data_dir** (JPEGs + optional mask JSON beside them) and **data.embeddings_dir**
-(teacher **{stem}.npy** matching each **{stem}.jpg**). See training/DATA.md.
+Full-SAM supervision is **per instance**: each sample is one JPEG, one annotation index, one box prompt
+(from COCO bbox or tight box on the instance mask), and one binary mask for that annotation only.
+
+Data paths: **data.data_dir** (JPEGs) and **data.embeddings_dir** (teacher **{stem}.npy**). See DATA.md.
 
 Training reads files via the filesystem (e.g. rclone mount). It does not load the full dataset into RAM;
 throughput depends on mount latency. Extract tar archives to a directory first — see training/DATA.md.
@@ -200,32 +202,72 @@ def subset_encoder_from_pairs(full: SA1BEncoderDataset, pairs: Sequence[Tuple[Pa
     return Subset(full, indices)
 
 
-def combined_mask_from_json(data: dict, out_h: int, out_w: int) -> np.ndarray:
+def _annotations_list_from_json(data: dict) -> List[dict]:
+    anns = data.get("annotations")
+    if not anns and "segmentation" in data and isinstance(data.get("segmentation"), (dict, list)):
+        return [data] if isinstance(data, dict) else []
+    if not anns:
+        return []
+    return [a for a in anns if isinstance(a, dict)]
+
+
+def mask_from_ann_segmentation(ann: dict, out_h: int, out_w: int) -> np.ndarray | None:
+    """Decode a single annotation's segmentation to a binary float mask (out_h, out_w), or None if empty."""
     if mask_util is None:
         raise ImportError("pycocotools is required for mask JSON; pip install pycocotools")
+    seg = ann.get("segmentation")
+    if seg is None:
+        return None
     m = np.zeros((out_h, out_w), dtype=np.float32)
-    anns = data.get("annotations")
-    if not anns and "segmentation" in data:
-        anns = [data]
-    if not anns:
-        raise ValueError("No annotations/segmentation in JSON")
-    for ann in anns:
-        seg = ann.get("segmentation") if isinstance(ann, dict) else None
-        if isinstance(seg, dict) and "counts" in seg:
-            dec = mask_util.decode(seg)
-            if dec.ndim == 3:
-                dec = dec.transpose(2, 0, 1).max(axis=0)
-            if dec.shape[0] != out_h or dec.shape[1] != out_w:
-                dec = cv2.resize(dec.astype(np.float32), (out_w, out_h), interpolation=cv2.INTER_NEAREST)
-            m = np.maximum(m, (dec > 0).astype(np.float32))
-        elif isinstance(seg, list) and len(seg) > 0 and isinstance(seg[0], (list, float, int)):
-            rles = mask_util.frPyObjects(seg, out_h, out_w)
-            for rle in rles:
-                dec = mask_util.decode(rle)
-                m = np.maximum(m, dec.astype(np.float32))
+    if isinstance(seg, dict) and "counts" in seg:
+        dec = mask_util.decode(seg)
+        if dec.ndim == 3:
+            dec = dec.transpose(2, 0, 1).max(axis=0)
+        if dec.shape[0] != out_h or dec.shape[1] != out_w:
+            dec = cv2.resize(dec.astype(np.float32), (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+        m = np.maximum(m, (dec > 0).astype(np.float32))
+    elif isinstance(seg, list) and len(seg) > 0 and isinstance(seg[0], (list, float, int)):
+        rles = mask_util.frPyObjects(seg, out_h, out_w)
+        for rle in rles:
+            dec = mask_util.decode(rle)
+            m = np.maximum(m, dec.astype(np.float32))
+    else:
+        return None
     if float(m.max()) <= 0:
-        raise ValueError("Decoded empty mask from JSON")
+        return None
     return (m > 0.5).astype(np.float32)
+
+
+def list_instance_samples(jpg_paths: Sequence[Path], data_cfg: dict) -> List[Tuple[Path, int]]:
+    """
+    One training row per (image, annotation_index) with a non-empty decoded mask.
+    Splits stay image-level; this expands each split's JPG list into instance indices.
+    """
+    out: List[Tuple[Path, int]] = []
+    ann_root = Path(data_cfg["annotation_root"]).expanduser().resolve()
+    for jpg in jpg_paths:
+        jpg = Path(jpg)
+        try:
+            jpath = resolve_annotation_json(jpg, data_cfg)
+        except FileNotFoundError:
+            continue
+        img_bgr = cv2.imread(str(jpg))
+        if img_bgr is None:
+            continue
+        oh, ow = img_bgr.shape[:2]
+        with open(jpath, encoding="utf-8") as f:
+            data = json.load(f)
+        anns = _annotations_list_from_json(data)
+        for i, ann in enumerate(anns):
+            m = mask_from_ann_segmentation(ann, oh, ow)
+            if m is not None:
+                out.append((jpg, i))
+    if not out:
+        raise RuntimeError(
+            f"No instance samples under annotation_root={ann_root}. "
+            "Check JSON layout (annotations[].segmentation) and that each split JPG has a matching JSON."
+        )
+    return out
 
 
 def resolve_annotation_json(jpg: Path, data_cfg: dict) -> Path:
@@ -239,10 +281,31 @@ def resolve_annotation_json(jpg: Path, data_cfg: dict) -> Path:
     raise FileNotFoundError(f"No annotation JSON for {jpg} under {root}")
 
 
+def _box_xyxy_resized_from_ann_or_mask(
+    ann: dict, oh: int, ow: int, nh: int, nw: int, mask_s: np.ndarray
+) -> torch.Tensor:
+    """COCO bbox [x,y,w,h] in original pixels → xyxy in resized (nh,nw); else tight box on mask_s."""
+    bb = ann.get("bbox")
+    sx, sy = nw / ow, nh / oh
+    if bb is not None and len(bb) == 4:
+        x, y, w, h = (float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
+        x0, y0 = x * sx, y * sy
+        x1, y1 = (x + w) * sx, (y + h) * sy
+        box = torch.tensor([[x0, y0, x1, y1]], dtype=torch.float32)
+    else:
+        ys, xs = np.where(mask_s > 0.5)
+        if len(xs) == 0:
+            raise ValueError("Empty instance mask for box fallback")
+        x0, x1 = float(xs.min()), float(xs.max())
+        y0, y1 = float(ys.min()), float(ys.max())
+        box = torch.tensor([[x0, y0, x1, y1]], dtype=torch.float32)
+    return box
+
+
 class SA1BSamDataset(Dataset):
     """
-    Full-SAM training sample: SAM-style image tensor (0–255 float CHW before preprocess in forward),
-    box prompt from mask bbox, low-res (256) target mask.
+    Full-SAM training: one sample per (image, annotation index). RGB image (float CHW 0–255),
+    box prompt from annotation COCO bbox (or tight box on the instance mask), low-res (256) GT mask.
     """
 
     def __init__(
@@ -252,16 +315,16 @@ class SA1BSamDataset(Dataset):
         img_size: int = 1024,
         low_res: int = 256,
     ) -> None:
-        self.paths = [Path(p) for p in jpg_paths]
         self.data_cfg = data_cfg
         self.img_size = img_size
         self.low_res = low_res
+        self.samples = list_instance_samples([Path(p) for p in jpg_paths], data_cfg)
 
     def __len__(self) -> int:
-        return len(self.paths)
+        return len(self.samples)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
-        jpg = self.paths[index]
+        jpg, ann_idx = self.samples[index]
         img_bgr = cv2.imread(str(jpg))
         if img_bgr is None:
             raise FileNotFoundError(str(jpg))
@@ -270,20 +333,20 @@ class SA1BSamDataset(Dataset):
         rs = ResizeLongestSide(self.img_size)
         rgb_s = rs.apply_image(rgb)
         nh, nw = rgb_s.shape[:2]
-        scale_h, scale_w = nh / oh, nw / ow
 
         jpath = resolve_annotation_json(jpg, self.data_cfg)
         with open(jpath, encoding="utf-8") as f:
             data = json.load(f)
-        mask_full = combined_mask_from_json(data, oh, ow)
+        anns = _annotations_list_from_json(data)
+        if ann_idx >= len(anns):
+            raise IndexError(f"ann_idx {ann_idx} out of range for {jpg}")
+        ann = anns[ann_idx]
+        mask_full = mask_from_ann_segmentation(ann, oh, ow)
+        if mask_full is None:
+            raise ValueError(f"Empty mask for {jpg} ann {ann_idx}")
         mask_s = cv2.resize(mask_full, (nw, nh), interpolation=cv2.INTER_NEAREST)
 
-        ys, xs = np.where(mask_s > 0.5)
-        if len(xs) == 0:
-            raise ValueError(f"Empty mask after resize for {jpg}")
-        x0, x1 = int(xs.min()), int(xs.max())
-        y0, y1 = int(ys.min()), int(ys.max())
-        box = torch.tensor([[x0, y0, x1, y1]], dtype=torch.float32)
+        box = _box_xyxy_resized_from_ann_or_mask(ann, oh, ow, nh, nw, mask_s)
 
         sam_image = torch.from_numpy(rgb_s).permute(2, 0, 1).float()
         low_tgt = cv2.resize(mask_s, (self.low_res, self.low_res), interpolation=cv2.INTER_NEAREST)
@@ -295,6 +358,7 @@ class SA1BSamDataset(Dataset):
             "boxes": box.unsqueeze(0),
             "low_res_mask_gt": low_tgt_t,
             "path": str(jpg),
+            "ann_idx": ann_idx,
         }
 
 
