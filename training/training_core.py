@@ -5,12 +5,13 @@ Used by `train.py` (single-GPU only).
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -92,6 +93,81 @@ def gpu_env_info() -> Dict[str, str]:
     except Exception:
         info["rocm_version"] = "n/a"
     return info
+
+
+# AMD ROCm: MLflow model metrics via pyrsmi (CHI@TACC / Chameleon ROCm nodes).
+_rocm_smi_initialized = False
+
+
+def _rocm_smi_shutdown() -> None:
+    global _rocm_smi_initialized
+    if not _rocm_smi_initialized:
+        return
+    try:
+        from pyrsmi import rocml
+
+        rocml.smi_shutdown()
+    except Exception:
+        pass
+    _rocm_smi_initialized = False
+
+
+def init_rocm_smi_for_gpu_util_logging() -> bool:
+    """
+    Initialize AMD SMI once (pyrsmi / libamd_smi). Used for MLflow gpu_utilization_* metrics.
+    PyTorch ROCm reports device.type == 'cuda'; GPU index matches rocml device index.
+    """
+    global _rocm_smi_initialized
+    if _rocm_smi_initialized:
+        return True
+    try:
+        from pyrsmi import rocml
+
+        rocml.smi_initialize()
+        _rocm_smi_initialized = True
+        atexit.register(_rocm_smi_shutdown)
+        return True
+    except Exception:
+        return False
+
+
+def sample_gpu_utilization_percent(device: torch.device) -> Optional[float]:
+    """
+    GFX utilization (0–100) for the training GPU via pyrsmi, or None if unavailable.
+    Call after torch.cuda.synchronize() for a meaningful sample.
+    """
+    if device.type != "cuda":
+        return None
+    if not _rocm_smi_initialized:
+        return None
+    try:
+        from pyrsmi import rocml
+
+        idx = device.index if device.index is not None else 0
+        u = rocml.smi_get_device_utilization(idx)
+        if u is None or u < 0:
+            return None
+        return float(u)
+    except Exception:
+        return None
+
+
+def sample_gpu_memory_utilization_percent(device: torch.device) -> Optional[float]:
+    """VRAM memory-busy percent (0–100) via pyrsmi, or None. See AMD smi_get_device_memory_busy."""
+    if device.type != "cuda":
+        return None
+    if not _rocm_smi_initialized:
+        return None
+    try:
+        from pyrsmi import rocml
+
+        idx = device.index if device.index is not None else 0
+        u = rocml.smi_get_device_memory_busy(idx)
+        if u is None or u < 0:
+            return None
+        return float(u)
+    except Exception:
+        return None
 
 
 def _unwrap(model: nn.Module) -> nn.Module:

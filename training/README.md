@@ -41,6 +41,8 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
+**GPU utilization (model metrics, AMD ROCm):** install **`pyrsmi`** (in `requirements.txt` on Linux). Training logs **`gpu_utilization_percent`** (GFX busy), **`gpu_memory_utilization_percent`** (VRAM memory-busy, AMD SMI), and **`gpu_utilization_epoch_mean`**, sampled on the **same GPU index** PyTorch uses for training (single-GPU runs: typically device **0**; a second GPU on the node is not logged). Run param **`gpu_util_mlflow_metrics`** is **`pyrsmi_rocm`** when AMD SMI initializes, else **`unavailable_pyrsmi_or_amdsmi`**.
+
 **`full_sam` validation previews:** after each epoch’s val IoU, **`train.val_preview_samples`** (default **3**) PNGs are logged to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same as training: COCO bbox or tight instance mask), predicted mask (green overlay), GT mask (red contour); filenames include **`ann=`** when applicable. Set **`val_preview_samples: 0`** to turn off. Steps per epoch scale with **instance count**, not image count—tune **`train.batch_size`** accordingly.
 
 **`encoder_distill` merged-SAM previews:** with **`data.annotation_root`** and **`train.val_preview_samples` > 0**, after val metrics the run merges TinyViT into the SAM scaffold and logs **`val_previews_merged_sam/epoch_XXXX/`**.
@@ -122,7 +124,7 @@ Point every run at the **team tracking server** (replace with your URI):
 export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
 ```
 
-**Metrics in the UI:** Runs use **`log_system_metrics=True`**, so MLflow records **System metrics** (names like `system/cpu_utilization_percentage`) in the **System metrics** tab. **Model metrics** (loss, learning rate, IoU, epoch time, etc.) come from `mlflow.log_metric` and appear under **Model metrics**. On **ROCm**, install **`pyrsmi`** (listed in `requirements.txt` on Linux) so GPU stats show in System metrics; otherwise you may only see CPU/RAM/disk there. If a run **stops before the first training log** (e.g. crash on batch 0), you may only see system samples and no loss curves yet.
+**Metrics in the UI:** Runs use **`log_system_metrics=True`**, so MLflow records **System metrics** (names like `system/cpu_utilization_percentage`) in the **System metrics** tab. **Model metrics** (loss, learning rate, IoU, epoch time, **`gpu_utilization_percent`**, **`gpu_utilization_epoch_mean`**, etc.) come from `mlflow.log_metric` and appear under **Model metrics**. On **AMD ROCm**, **`pyrsmi`** (see `requirements.txt` on Linux) enables those GPU utilization model metrics and helps MLflow system GPU stats. If a run **stops before the first training log** (e.g. crash on batch 0), you may only see system samples and no loss curves yet.
 
 ---
 

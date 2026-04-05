@@ -9,8 +9,9 @@ Weight loading: training.use_pretrained + training.pretrained_checkpoint_path on
 Student TinyViT in encoder_distill is always random-init unless extended elsewhere.
 
 Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
-System metrics (CPU/RAM/disk/GPU) use MLflow's collector (see start_run(log_system_metrics=True));
-install **pyrsmi** on AMD/ROCm so GPU appears in the System metrics tab.
+System metrics (CPU/RAM/disk/GPU) use MLflow's collector (see start_run(log_system_metrics=True)).
+On **AMD ROCm** (e.g. Chameleon), **pyrsmi** drives both MLflow system GPU stats and **model** metrics
+`gpu_utilization_percent` / `gpu_memory_utilization_percent` sampled on the **training** GPU.
 """
 from __future__ import annotations
 
@@ -50,6 +51,9 @@ from training_core import (
     flatten_cfg,
     git_sha,
     gpu_env_info,
+    init_rocm_smi_for_gpu_util_logging,
+    sample_gpu_memory_utilization_percent,
+    sample_gpu_utilization_percent,
     _import_tiny_vit,
     _repo_root,
     _resolve_mobilesam_root,
@@ -298,6 +302,8 @@ def train_sam_epochs(
         sam.train()
         epoch_loss = 0.0
         nb = 0
+        epoch_gpu_util_sum = 0.0
+        epoch_gpu_util_count = 0
         t0 = time.perf_counter()
         bar = tqdm(train_loader, desc=f"SAM train ep {ep}", disable=not show_tqdm)
         for batch_idx, batch in enumerate(bar):
@@ -317,8 +323,22 @@ def train_sam_epochs(
             nb += 1
             global_step += 1
 
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(device)
+            util_gpu = sample_gpu_utilization_percent(device)
+            util_mem = sample_gpu_memory_utilization_percent(device)
+            if util_gpu is not None:
+                epoch_gpu_util_sum += util_gpu
+                epoch_gpu_util_count += 1
+
             if batch_idx == 0 or (batch_idx + 1) % log_iv == 0:
                 mlflow.log_metric("sam_train_loss_batch", loss_reduced.item(), step=global_step)
+                if util_gpu is not None:
+                    mlflow.log_metric("gpu_utilization_percent", util_gpu, step=global_step)
+                if util_mem is not None:
+                    mlflow.log_metric(
+                        "gpu_memory_utilization_percent", util_mem, step=global_step
+                    )
 
             if show_tqdm:
                 bar.set_postfix(loss=f"{loss_reduced.item():.4f}")
@@ -330,6 +350,12 @@ def train_sam_epochs(
         epoch_time = time.perf_counter() - t0
         mlflow.log_metric("sam_train_loss_epoch", epoch_loss / max(nb, 1), step=ep)
         mlflow.log_metric("sam_epoch_time_sec", epoch_time, step=ep)
+        if epoch_gpu_util_count > 0:
+            mlflow.log_metric(
+                "gpu_utilization_epoch_mean",
+                epoch_gpu_util_sum / epoch_gpu_util_count,
+                step=ep,
+            )
         if val_loader is not None:
             viou = eval_sam_loader_mean_iou(sam, val_loader, device, multimask_output)
             mlflow.log_metric("val_mean_iou_lowres", viou, step=ep)
@@ -500,6 +526,12 @@ def run_encoder_distill(
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
+    rocm_smi_ok = init_rocm_smi_for_gpu_util_logging()
+    mlflow.log_param(
+        "gpu_util_mlflow_metrics",
+        "pyrsmi_rocm" if rocm_smi_ok else "unavailable_pyrsmi_or_amdsmi",
+    )
+
     try:
         epoch_bar = tqdm(
             range(1, epochs + 1),
@@ -510,6 +542,8 @@ def run_encoder_distill(
             model.train()
             epoch_loss = 0.0
             epoch_batches = 0
+            epoch_gpu_util_sum = 0.0
+            epoch_gpu_util_count = 0
             t_epoch = time.perf_counter()
 
             batch_bar = tqdm(
@@ -533,13 +567,26 @@ def run_encoder_distill(
 
                 if torch.cuda.is_available():
                     peak_mem = max(peak_mem, torch.cuda.max_memory_allocated(device))
+                    torch.cuda.synchronize(device)
+                util_gpu = sample_gpu_utilization_percent(device)
+                util_mem = sample_gpu_memory_utilization_percent(device)
+                if util_gpu is not None:
+                    epoch_gpu_util_sum += util_gpu
+                    epoch_gpu_util_count += 1
 
+                step = (epoch - 1) * len(train_loader) + batch_idx
                 if batch_idx == 0 or (batch_idx + 1) % log_interval == 0:
                     mlflow.log_metric(
                         "train_loss_batch",
                         loss_reduced.item(),
-                        step=(epoch - 1) * len(train_loader) + batch_idx,
+                        step=step,
                     )
+                    if util_gpu is not None:
+                        mlflow.log_metric("gpu_utilization_percent", util_gpu, step=step)
+                    if util_mem is not None:
+                        mlflow.log_metric(
+                            "gpu_memory_utilization_percent", util_mem, step=step
+                        )
                 if show_tqdm:
                     batch_bar.set_postfix(loss=f"{loss_reduced.item():.4f}")
 
@@ -550,6 +597,12 @@ def run_encoder_distill(
             mlflow.log_metric("train_loss_epoch", train_loss_epoch, step=epoch)
             mlflow.log_metric("epoch_time_sec", epoch_time, step=epoch)
             mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=epoch)
+            if epoch_gpu_util_count > 0:
+                mlflow.log_metric(
+                    "gpu_utilization_epoch_mean",
+                    epoch_gpu_util_sum / epoch_gpu_util_count,
+                    step=epoch,
+                )
 
             val_metrics = evaluate_encoder(
                 model,
@@ -735,6 +788,12 @@ def run_full_sam(
         mlflow.log_param(f"env_{k}", v)
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
+
+    rocm_smi_ok = init_rocm_smi_for_gpu_util_logging()
+    mlflow.log_param(
+        "gpu_util_mlflow_metrics",
+        "pyrsmi_rocm" if rocm_smi_ok else "unavailable_pyrsmi_or_amdsmi",
+    )
 
     try:
         train_sam_epochs(
