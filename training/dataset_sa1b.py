@@ -66,6 +66,32 @@ def _jpg_from_rel(rel: str, data_dir: Path) -> Path:
     return (data_dir / p).resolve()
 
 
+def _index_path_compatible(want: Path, stored_raw: str, label: str, *, tail_parts: int = 2) -> bool:
+    """
+    Index JSON stores absolute paths from the machine that ran prebuild (e.g. /home/cc/...).
+    Docker training uses the same files at /data/... — exact resolve() differs but the path tail
+    (e.g. Raw-Data/extracted) should match.
+    """
+    want_r = want.resolve()
+    stored_p = Path(stored_raw).expanduser()
+    try:
+        got_r = stored_p.resolve()
+    except (OSError, RuntimeError):
+        got_r = stored_p
+    if want_r == got_r:
+        return True
+    wt, st = want_r.parts, stored_p.parts
+    if len(wt) >= tail_parts and len(st) >= tail_parts and wt[-tail_parts:] == st[-tail_parts:]:
+        print(
+            f"sam_instance_index: {label} prefix differs (index {stored_raw!r} vs run {want_r}); "
+            f"accepting matching path tail {wt[-tail_parts:]!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return True
+    return False
+
+
 def load_sam_instance_index_entries(
     index_path: Path, data_cfg: dict, split: str
 ) -> List[Tuple[Path, int]]:
@@ -78,13 +104,14 @@ def load_sam_instance_index_entries(
     ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
     ar = Path(data_cfg["annotation_root"]).expanduser().resolve()
 
-    def _must_match(name: str, want: Path, got_raw: str) -> None:
-        got = Path(got_raw).expanduser().resolve()
-        if got != want:
-            raise ValueError(
-                f"sam_instance_index {name} mismatch: index has {got}, config has {want}. "
-                "Rebuild the index or fix data paths."
-            )
+    def _must_match(name: str, want: Path, got_raw: str, *, tail_parts: int = 2) -> None:
+        if _index_path_compatible(want, got_raw, name, tail_parts=tail_parts):
+            return
+        raise ValueError(
+            f"sam_instance_index {name} mismatch: index has {got_raw!r}, config has {want}. "
+            "Rebuild the index on this machine, fix data paths, or ensure the last path segments match "
+            "(e.g. .../Raw-Data/extracted vs /data/Raw-Data/extracted)."
+        )
 
     _must_match("data_dir", dd, payload["data_dir"])
     _must_match("embeddings_dir", ed, payload["embeddings_dir"])
