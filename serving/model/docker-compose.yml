@@ -1,0 +1,167 @@
+version: "3.9"
+
+# ── shared config ─────────────────────────────────────────────────────────────
+x-benchmark-base-cpu: &benchmark-base-cpu
+  build:
+    context: .
+    dockerfile: Dockerfile.cpu
+  volumes:
+    - benchmark_data:/data
+  environment:
+    DATA_DIR:    /data
+    MODEL_DIR:   /data
+    NUM_TRIALS:  "100"
+    NUM_BATCHES: "50"
+    BATCH_SIZE:  "4"
+  command: python benchmark.py
+  depends_on:
+    download:
+      condition: service_completed_successfully
+
+x-benchmark-base-cuda: &benchmark-base-cuda
+  build:
+    context: .
+    dockerfile: Dockerfile.cuda
+  volumes:
+    - benchmark_data:/data
+  environment:
+    DATA_DIR:    /data
+    MODEL_DIR:   /data
+    NUM_TRIALS:  "100"
+    NUM_BATCHES: "50"
+    BATCH_SIZE:  "4"
+  command: python benchmark.py
+  depends_on:
+    download:
+      condition: service_completed_successfully
+  gpus: all
+
+# ── data download (runs once) ─────────────────────────────────────────────────
+services:
+  download:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    volumes:
+      - benchmark_data:/data
+    environment:
+      DATA_DIR:   /data
+      MODEL_DIR:  /data
+    command: python download_data.py
+
+  # ── PyTorch experiments ───────────────────────────────────────────────────
+  pytorch_base:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  pytorch_base
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "4"
+
+  pytorch_compiled:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  pytorch_compiled
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "4"
+
+  # ── ONNX experiments ──────────────────────────────────────────────────────
+  onnx:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  onnx
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  onnx_graph:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  onnx_graph
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  onnx_dynquant:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  onnx_dynquant
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  onnx_static_cons:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  onnx_static_cons
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  onnx_static_agg:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  onnx_static_agg
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  # ── Execution provider experiments ────────────────────────────────────────
+  ep_cpu:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  ep_cpu
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  ep_cuda:
+    <<: *benchmark-base-cuda
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  ep_cuda
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  ep_tensorrt:
+    <<: *benchmark-base-cuda
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  ep_tensorrt
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+  ep_openvino:
+    <<: *benchmark-base-cpu
+    environment:
+      DATA_DIR:    /data
+      MODEL_DIR:   /data
+      EXPERIMENT:  ep_openvino
+      NUM_TRIALS:  "100"
+      NUM_BATCHES: "50"
+      BATCH_SIZE:  "1"
+
+# ── shared volume for downloaded data + exported ONNX models ─────────────────
+volumes:
+  benchmark_data:

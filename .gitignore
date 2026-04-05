@@ -9,3 +9,5 @@ __pycache__/
 venv/
 *.pth
 mlruns/
+
+.DS_Store

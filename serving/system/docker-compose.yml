@@ -1,0 +1,145 @@
+version: "3.9"
+
+# ── shared env for all benchmark clients ─────────────────────────────────────
+x-client-base: &client-base
+  build:
+    context: .
+    dockerfile: Dockerfile.client
+  volumes:
+    - serving_data:/data
+  environment:
+    DATA_DIR:           /data
+    FASTAPI_URL:        http://fastapi_server:8000/predict
+    TRITON_URL:         triton_server:8000
+    TRITON_MODEL:       mobile_sam
+    NUM_SERIAL_TRIALS:  "100"
+    NUM_CONCURRENT:     "8"
+    CONCURRENT_REQS:    "200"
+    RATE_REQS_PER_SEC:  "5.0"
+    RATE_DURATION_SEC:  "30.0"
+
+services:
+
+  # ── 1. Download data + export ONNX (runs once) ────────────────────────────
+  init:
+    build:
+      context: ..
+      dockerfile: serving/Dockerfile.init
+    volumes:
+      - serving_data:/data
+    environment:
+      DATA_DIR:  /data
+      MODEL_DIR: /data
+
+  # ── 2. FastAPI server ──────────────────────────────────────────────────────
+  fastapi_server:
+    build:
+      context: ..
+      dockerfile: serving/fastapi_app/Dockerfile
+    volumes:
+      - serving_data:/data
+    environment:
+      MODEL_DIR: /data
+    ports:
+      - "8000:8000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ── 3. Triton server ───────────────────────────────────────────────────────
+  triton_server:
+    build:
+      context: .
+      dockerfile: Dockerfile.triton
+    volumes:
+      - serving_data:/data
+      - ./triton_models:/models
+    environment:
+      MODEL_DIR: /data
+    ports:
+      - "8001:8000"
+      - "8002:8001"
+      - "8003:8002"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ── FastAPI experiments ────────────────────────────────────────────────────
+  fastapi_serial:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      FASTAPI_URL:       http://fastapi_server:8000/predict
+      EXPERIMENT:        fastapi_serial
+      NUM_SERIAL_TRIALS: "100"
+
+  fastapi_concurrent:
+    <<: *client-base
+    environment:
+      DATA_DIR:        /data
+      FASTAPI_URL:     http://fastapi_server:8000/predict
+      EXPERIMENT:      fastapi_concurrent
+      NUM_CONCURRENT:  "8"
+      CONCURRENT_REQS: "200"
+
+  fastapi_constant_rate:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      FASTAPI_URL:       http://fastapi_server:8000/predict
+      EXPERIMENT:        fastapi_constant_rate
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
+  fastapi_poisson:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      FASTAPI_URL:       http://fastapi_server:8000/predict
+      EXPERIMENT:        fastapi_poisson
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
+  # ── Triton experiments ─────────────────────────────────────────────────────
+  triton_serial:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      TRITON_URL:        triton_server:8000
+      TRITON_MODEL:      mobile_sam
+      EXPERIMENT:        triton_serial
+      NUM_SERIAL_TRIALS: "100"
+
+  triton_concurrent:
+    <<: *client-base
+    environment:
+      DATA_DIR:        /data
+      TRITON_URL:      triton_server:8000
+      TRITON_MODEL:    mobile_sam
+      EXPERIMENT:      triton_concurrent
+      NUM_CONCURRENT:  "8"
+      CONCURRENT_REQS: "200"
+
+  triton_constant_rate:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      TRITON_URL:        triton_server:8000
+      TRITON_MODEL:      mobile_sam
+      EXPERIMENT:        triton_constant_rate
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
+  triton_poisson:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      TRITON_URL:        triton_server:8000
+      TRITON_MODEL:      mobile_sam
+      EXPERIMENT:        triton_poisson
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
+# ── shared volume ─────────────────────────────────────────────────────────────
+volumes:
+  serving_data:
