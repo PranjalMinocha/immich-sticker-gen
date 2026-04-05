@@ -11,6 +11,7 @@ throughput depends on mount latency. Extract tar archives to a directory first â
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import sys
@@ -31,6 +32,65 @@ except ImportError:
 
 SAM_INSTANCE_INDEX_VERSION = 1
 DEFAULT_SAM_INSTANCE_INDEX_REL = Path("sam_instance_index") / "sam_instances_v1.json"
+
+# Fixed-size test eval set: same subset across runs (seed independent of data.seed).
+SAM_TEST_INSTANCE_COUNT = 1000
+SAM_TEST_INSTANCE_SUBSEED = 1337
+
+
+def subsample_sam_instance_rows(
+    samples: List[Tuple[Path, int]],
+    *,
+    split: str,
+    data_cfg: dict,
+    progress_label: str = "",
+) -> List[Tuple[Path, int]]:
+    """
+    Train/val: optional data.sam_instance_frac in (0, 1] applies to both splits (reproducible via data.seed).
+    Test: cap to SAM_TEST_INSTANCE_COUNT with fixed RNG (comparable across experiments).
+    """
+    label = f" [{progress_label}]" if progress_label else ""
+    n = len(samples)
+    if n == 0:
+        return samples
+
+    if split == "test":
+        k = min(SAM_TEST_INSTANCE_COUNT, n)
+        if k == n:
+            return samples
+        rng = random.Random(SAM_TEST_INSTANCE_SUBSEED)
+        idx = sorted(rng.sample(range(n), k))
+        out = [samples[i] for i in idx]
+        print(
+            f"SAM dataset{label}: test eval fixed subset {n} -> {k} instances "
+            f"(seed={SAM_TEST_INSTANCE_SUBSEED}, cap={SAM_TEST_INSTANCE_COUNT})",
+            file=sys.stderr,
+            flush=True,
+        )
+        return out
+
+    if split not in ("train", "val"):
+        return samples
+
+    frac = float(data_cfg.get("sam_instance_frac", 1.0))
+    if frac > 1.0 or frac <= 0:
+        raise ValueError(f"data.sam_instance_frac must be in (0, 1], got {frac}")
+    if frac >= 1.0:
+        return samples
+
+    seed = int(data_cfg.get("seed", 42))
+    sub_seed = int(hashlib.sha256(f"{seed}:sam_instance_frac:{split}".encode()).hexdigest()[:8], 16)
+    rng = random.Random(sub_seed)
+    k = max(1, int(n * frac))
+    k = min(k, n)
+    idx = sorted(rng.sample(range(n), k))
+    out = [samples[i] for i in idx]
+    print(
+        f"SAM dataset{label}: subsampled {split} {n} -> {k} instances (sam_instance_frac={frac})",
+        file=sys.stderr,
+        flush=True,
+    )
+    return out
 
 
 def resolved_sam_instance_index_path(data_cfg: dict) -> Path | None:
@@ -515,6 +575,14 @@ class SA1BSamDataset(Dataset):
             self.samples = list_instance_samples(
                 [Path(p) for p in jpg_paths],
                 data_cfg,
+                progress_label=progress_label,
+            )
+
+        if split:
+            self.samples = subsample_sam_instance_rows(
+                self.samples,
+                split=split,
+                data_cfg=data_cfg,
                 progress_label=progress_label,
             )
 

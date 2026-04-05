@@ -711,6 +711,11 @@ def run_full_sam(
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
+    mlflow.log_param("sam_instance_frac", float(data_cfg.get("sam_instance_frac", 1.0)))
+    mlflow.log_param("sam_train_instances_effective", len(train_ds))
+    mlflow.log_param("sam_val_instances_effective", len(val_ds))
+    mlflow.log_param("sam_test_instances_effective", len(test_ds))
+
     try:
         train_sam_epochs(
             sam,

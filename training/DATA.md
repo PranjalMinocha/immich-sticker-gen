@@ -77,3 +77,11 @@ python3 prebuild_sam_instance_index.py --config ~/training_out/run.yaml
 ```
 
 Use the **same YAML** as `train.py` so paths and split rules match. After the JSON exists under **`data_dir`**, Docker training starts without rescanning all images.
+
+## Subsampling instance rows (shorter epochs, no re-index)
+
+Optional **`data.sam_instance_frac`** in **`(0, 1]`** (default **`1.0`**): after loading the full train/val lists (from the index or a live scan), keep a **random subset** of that fraction for **both** train and val. Reproducible for a given **`data.seed`**. Does **not** change the JSON on disk.
+
+**Test split:** the **test** loader always uses at most **`1000`** instance rows for final IoU, chosen with a **fixed RNG seed** in code (independent of **`data.seed`**) so eval is comparable across runs. If the full test split has fewer than 1000 rows, all are used.
+
+MLflow logs **`sam_instance_frac`**, **`sam_train_instances_effective`**, **`sam_val_instances_effective`**, **`sam_test_instances_effective`**.
