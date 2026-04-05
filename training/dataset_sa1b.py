@@ -259,29 +259,43 @@ def list_instance_samples(
         file=sys.stderr,
         flush=True,
     )
+    # Frequent logs: first 5 images individually, then every 25 (7830//20 was ~391 = long silence).
+    log_every = 25
+
+    def _log_progress(done: int) -> None:
+        print(
+            f"SAM dataset{label}: {done}/{n_img} images scanned → {len(out)} instance samples",
+            file=sys.stderr,
+            flush=True,
+        )
+
     for img_i, jpg in enumerate(paths):
-        if n_img > 50 and img_i % max(1, n_img // 20) == 0:
+        jpg = Path(jpg)
+        if img_i == 0:
             print(
-                f"SAM dataset{label}: indexed {img_i}/{n_img} images → {len(out)} instance samples so far",
+                f"SAM dataset{label}: starting {jpg.name} (if this line hangs, check this file + its JSON / mask decode cost)",
                 file=sys.stderr,
                 flush=True,
             )
-        jpg = Path(jpg)
         try:
             jpath = resolve_annotation_json(jpg, data_cfg)
         except FileNotFoundError:
-            continue
-        img_bgr = cv2.imread(str(jpg))
-        if img_bgr is None:
-            continue
-        oh, ow = img_bgr.shape[:2]
-        with open(jpath, encoding="utf-8") as f:
-            data = json.load(f)
-        anns = _annotations_list_from_json(data)
-        for i, ann in enumerate(anns):
-            m = mask_from_ann_segmentation(ann, oh, ow)
-            if m is not None:
-                out.append((jpg, i))
+            pass
+        else:
+            img_bgr = cv2.imread(str(jpg))
+            if img_bgr is not None:
+                oh, ow = img_bgr.shape[:2]
+                with open(jpath, encoding="utf-8") as f:
+                    data = json.load(f)
+                anns = _annotations_list_from_json(data)
+                for i, ann in enumerate(anns):
+                    m = mask_from_ann_segmentation(ann, oh, ow)
+                    if m is not None:
+                        out.append((jpg, i))
+
+        done = img_i + 1
+        if done <= 5 or done % log_every == 0 or done == n_img:
+            _log_progress(done)
     if not out:
         raise RuntimeError(
             f"No instance samples under annotation_root={ann_root}. "
