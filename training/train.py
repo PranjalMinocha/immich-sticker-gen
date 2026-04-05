@@ -30,6 +30,19 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset_sa1b import SA1BSamDataset, build_datasets, build_sam_loaders
+
+
+def _announce_mlflow_connection(tracking_uri: str) -> None:
+    """Explain where we connect; avoids mistaking MLflow blocking for 'training stuck'."""
+    print(
+        "\nMLflow: connecting to "
+        f"{tracking_uri!r} …\n"
+        "  If this hangs, the tracking server is unreachable from this process.\n"
+        "  Docker: 127.0.0.1 is the container, not your host — set "
+        "-e MLFLOW_TRACKING_URI=http://<server>:<port> or mlflow.tracking_uri in YAML.\n"
+        "  Offline option: mlflow.tracking_uri: file:///out/mlruns with -v ~/training_out:/out.\n",
+        flush=True,
+    )
 from sam_utils import (
     build_sam_tiny,
     forward_sam_trainable,
@@ -433,6 +446,9 @@ def run_encoder_distill(
     experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-encoder")
     run_name = mlflow_cfg.get("run_name")
 
+    _announce_mlflow_connection(tracking_uri)
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "120")
+
     sha = git_sha(_repo_root())
     flat_params: Dict[str, str] = {}
     cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
@@ -667,6 +683,10 @@ def run_full_sam(
     )
     experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-sam")
     run_name = mlflow_cfg.get("run_name")
+
+    _announce_mlflow_connection(tracking_uri)
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "120")
+
     sha = git_sha(_repo_root())
     flat_params: Dict[str, str] = {}
     cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
