@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -238,14 +239,33 @@ def mask_from_ann_segmentation(ann: dict, out_h: int, out_w: int) -> np.ndarray 
     return (m > 0.5).astype(np.float32)
 
 
-def list_instance_samples(jpg_paths: Sequence[Path], data_cfg: dict) -> List[Tuple[Path, int]]:
+def list_instance_samples(
+    jpg_paths: Sequence[Path],
+    data_cfg: dict,
+    *,
+    progress_label: str = "",
+) -> List[Tuple[Path, int]]:
     """
     One training row per (image, annotation_index) with a non-empty decoded mask.
     Splits stay image-level; this expands each split's JPG list into instance indices.
     """
     out: List[Tuple[Path, int]] = []
     ann_root = Path(data_cfg["annotation_root"]).expanduser().resolve()
-    for jpg in jpg_paths:
+    paths = [Path(p) for p in jpg_paths]
+    n_img = len(paths)
+    label = f" [{progress_label}]" if progress_label else ""
+    print(
+        f"SAM dataset: building instance index{label} over {n_img} images (read JPG + JSON + decode masks; can take several minutes)...",
+        file=sys.stderr,
+        flush=True,
+    )
+    for img_i, jpg in enumerate(paths):
+        if n_img > 50 and img_i % max(1, n_img // 20) == 0:
+            print(
+                f"SAM dataset{label}: indexed {img_i}/{n_img} images → {len(out)} instance samples so far",
+                file=sys.stderr,
+                flush=True,
+            )
         jpg = Path(jpg)
         try:
             jpath = resolve_annotation_json(jpg, data_cfg)
@@ -267,6 +287,11 @@ def list_instance_samples(jpg_paths: Sequence[Path], data_cfg: dict) -> List[Tup
             f"No instance samples under annotation_root={ann_root}. "
             "Check JSON layout (annotations[].segmentation) and that each split JPG has a matching JSON."
         )
+    print(
+        f"SAM dataset{label}: done — {len(out)} instance samples from {n_img} images",
+        file=sys.stderr,
+        flush=True,
+    )
     return out
 
 
@@ -314,11 +339,16 @@ class SA1BSamDataset(Dataset):
         data_cfg: dict,
         img_size: int = 1024,
         low_res: int = 256,
+        progress_label: str = "",
     ) -> None:
         self.data_cfg = data_cfg
         self.img_size = img_size
         self.low_res = low_res
-        self.samples = list_instance_samples([Path(p) for p in jpg_paths], data_cfg)
+        self.samples = list_instance_samples(
+            [Path(p) for p in jpg_paths],
+            data_cfg,
+            progress_label=progress_label,
+        )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -428,9 +458,9 @@ def build_sam_loaders(
 ):
     if not data_cfg.get("annotation_root"):
         return None, None, None
-    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg)
-    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg)
-    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg)
+    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train")
+    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val")
+    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test")
 
     def collate(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return batch
