@@ -199,8 +199,6 @@ docker run --rm -it \
 
 Copy and edit **`training/configs/chameleon_docker.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.data_dir`** / **`data.embeddings_dir`** to match `/data`.
 
-**MLflow in Docker:** Always pass **`-e MLFLOW_TRACKING_URI=...`** (or set **`mlflow.tracking_uri`** in YAML) to a server your container can reach. The default **`http://127.0.0.1:5000`** is **inside the container**, so the run can appear “stuck” before training starts. For a local run without a server, use **`file:///out/mlruns`** in YAML and keep the **`/out`** volume.
-
 ---
 
 ## 4. Local development (laptop / workstation)

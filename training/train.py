@@ -29,20 +29,12 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset_sa1b import SA1BSamDataset, build_datasets, build_sam_loaders
-
-
-def _announce_mlflow_connection(tracking_uri: str) -> None:
-    """Explain where we connect; avoids mistaking MLflow blocking for 'training stuck'."""
-    print(
-        "\nMLflow: connecting to "
-        f"{tracking_uri!r} …\n"
-        "  If this hangs, the tracking server is unreachable from this process.\n"
-        "  Docker: 127.0.0.1 is the container, not your host — set "
-        "-e MLFLOW_TRACKING_URI=http://<server>:<port> or mlflow.tracking_uri in YAML.\n"
-        "  Offline option: mlflow.tracking_uri: file:///out/mlruns with -v ~/training_out:/out.\n",
-        flush=True,
-    )
+from dataset_sa1b import (
+    SAM_ENCODER_PAD_SIDE,
+    SA1BSamDataset,
+    build_datasets,
+    build_sam_loaders,
+)
 from sam_utils import (
     build_sam_tiny,
     forward_sam_trainable,
@@ -127,6 +119,29 @@ def _collect_val_samples(loader: DataLoader, n: int) -> List[Dict[str, Any]]:
     return out
 
 
+def _low_res_sam_to_unpadded_hw(
+    low_res_hw: np.ndarray,
+    unpadded_h: int,
+    unpadded_w: int,
+    *,
+    full_side: int = SAM_ENCODER_PAD_SIDE,
+    interpolation: int,
+) -> np.ndarray:
+    """
+    SAM low-res masks (256²) align to the padded square input to the image encoder (1024²).
+    Dataset images are nh×nw in the top-left of that square; map mask to the same layout.
+    """
+    lr = low_res_hw.shape[0]
+    if low_res_hw.shape[1] != lr:
+        raise ValueError(f"Expected square low-res mask, got {low_res_hw.shape}")
+    up = cv2.resize(
+        low_res_hw,
+        (full_side, full_side),
+        interpolation=interpolation,
+    )
+    return up[:unpadded_h, :unpadded_w]
+
+
 @torch.no_grad()
 def log_sam_val_preview_artifacts(
     sam: nn.Module,
@@ -183,8 +198,12 @@ def log_sam_val_preview_artifacts(
         img_u8 = np.clip(img, 0.0, 255.0).astype(np.uint8)
         h, w = img_u8.shape[:2]
 
-        pred_up = cv2.resize(pred_lr, (w, h), interpolation=cv2.INTER_LINEAR)
-        gt_up = cv2.resize(gt_lr, (w, h), interpolation=cv2.INTER_NEAREST)
+        pred_up = _low_res_sam_to_unpadded_hw(
+            pred_lr, h, w, interpolation=cv2.INTER_LINEAR
+        )
+        gt_up = _low_res_sam_to_unpadded_hw(
+            gt_lr, h, w, interpolation=cv2.INTER_NEAREST
+        )
 
         # BGR for cv2 drawing / imwrite
         vis = cv2.cvtColor(img_u8, cv2.COLOR_RGB2BGR).astype(np.float32)
@@ -393,7 +412,13 @@ def run_encoder_distill(
         and data_cfg.get("annotation_root")
         and len(jpg_splits["val"]) > 0
     ):
-        pv_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val_preview", split="val")
+        pv_ds = SA1BSamDataset(
+            jpg_splits["val"],
+            data_cfg,
+            img_size=int(data_cfg.get("image_size", 1024)),
+            progress_label="val_preview",
+            split="val",
+        )
         bs_pv = min(4, max(len(pv_ds), 1))
         sam_enc_val_loader = DataLoader(
             pv_ds,
@@ -445,9 +470,6 @@ def run_encoder_distill(
     )
     experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-encoder")
     run_name = mlflow_cfg.get("run_name")
-
-    _announce_mlflow_connection(tracking_uri)
-    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "120")
 
     sha = git_sha(_repo_root())
     flat_params: Dict[str, str] = {}
@@ -635,9 +657,16 @@ def run_full_sam(
     batch_size = int(train_cfg.get("batch_size", 4))
     num_workers = int(data_cfg.get("num_workers", 4))
 
-    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train", split="train")
-    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val", split="val")
-    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test", split="test")
+    img_sz = int(data_cfg.get("image_size", 1024))
+    train_ds = SA1BSamDataset(
+        jpg_splits["train"], data_cfg, img_size=img_sz, progress_label="train", split="train"
+    )
+    val_ds = SA1BSamDataset(
+        jpg_splits["val"], data_cfg, img_size=img_sz, progress_label="val", split="val"
+    )
+    test_ds = SA1BSamDataset(
+        jpg_splits["test"], data_cfg, img_size=img_sz, progress_label="test", split="test"
+    )
     sam_train = DataLoader(
         train_ds,
         batch_size=batch_size,
@@ -683,10 +712,6 @@ def run_full_sam(
     )
     experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-sam")
     run_name = mlflow_cfg.get("run_name")
-
-    _announce_mlflow_connection(tracking_uri)
-    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "120")
-
     sha = git_sha(_repo_root())
     flat_params: Dict[str, str] = {}
     cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
@@ -710,11 +735,6 @@ def run_full_sam(
         mlflow.log_param(f"env_{k}", v)
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
-
-    mlflow.log_param("sam_instance_frac", float(data_cfg.get("sam_instance_frac", 1.0)))
-    mlflow.log_param("sam_train_instances_effective", len(train_ds))
-    mlflow.log_param("sam_val_instances_effective", len(val_ds))
-    mlflow.log_param("sam_test_instances_effective", len(test_ds))
 
     try:
         train_sam_epochs(

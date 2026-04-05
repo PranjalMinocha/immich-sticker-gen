@@ -11,7 +11,6 @@ throughput depends on mount latency. Extract tar archives to a directory first �
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import random
 import sys
@@ -33,64 +32,9 @@ except ImportError:
 SAM_INSTANCE_INDEX_VERSION = 1
 DEFAULT_SAM_INSTANCE_INDEX_REL = Path("sam_instance_index") / "sam_instances_v1.json"
 
-# Fixed-size test eval set: same subset across runs (seed independent of data.seed).
-SAM_TEST_INSTANCE_COUNT = 1000
-SAM_TEST_INSTANCE_SUBSEED = 1337
-
-
-def subsample_sam_instance_rows(
-    samples: List[Tuple[Path, int]],
-    *,
-    split: str,
-    data_cfg: dict,
-    progress_label: str = "",
-) -> List[Tuple[Path, int]]:
-    """
-    Train/val: optional data.sam_instance_frac in (0, 1] applies to both splits (reproducible via data.seed).
-    Test: cap to SAM_TEST_INSTANCE_COUNT with fixed RNG (comparable across experiments).
-    """
-    label = f" [{progress_label}]" if progress_label else ""
-    n = len(samples)
-    if n == 0:
-        return samples
-
-    if split == "test":
-        k = min(SAM_TEST_INSTANCE_COUNT, n)
-        if k == n:
-            return samples
-        rng = random.Random(SAM_TEST_INSTANCE_SUBSEED)
-        idx = sorted(rng.sample(range(n), k))
-        out = [samples[i] for i in idx]
-        print(
-            f"SAM dataset{label}: test eval fixed subset {n} -> {k} instances "
-            f"(seed={SAM_TEST_INSTANCE_SUBSEED}, cap={SAM_TEST_INSTANCE_COUNT})",
-            file=sys.stderr,
-            flush=True,
-        )
-        return out
-
-    if split not in ("train", "val"):
-        return samples
-
-    frac = float(data_cfg.get("sam_instance_frac", 1.0))
-    if frac > 1.0 or frac <= 0:
-        raise ValueError(f"data.sam_instance_frac must be in (0, 1], got {frac}")
-    if frac >= 1.0:
-        return samples
-
-    seed = int(data_cfg.get("seed", 42))
-    sub_seed = int(hashlib.sha256(f"{seed}:sam_instance_frac:{split}".encode()).hexdigest()[:8], 16)
-    rng = random.Random(sub_seed)
-    k = max(1, int(n * frac))
-    k = min(k, n)
-    idx = sorted(rng.sample(range(n), k))
-    out = [samples[i] for i in idx]
-    print(
-        f"SAM dataset{label}: subsampled {split} {n} -> {k} instances (sam_instance_frac={frac})",
-        file=sys.stderr,
-        flush=True,
-    )
-    return out
+# MobileSAM / SAM: mask_decoder 256² aligns to the padded square fed to the image encoder (1024²).
+SAM_ENCODER_PAD_SIDE = 1024
+SAM_MASK_LOW_RES = 256
 
 
 def resolved_sam_instance_index_path(data_cfg: dict) -> Path | None:
@@ -126,32 +70,6 @@ def _jpg_from_rel(rel: str, data_dir: Path) -> Path:
     return (data_dir / p).resolve()
 
 
-def _index_path_compatible(want: Path, stored_raw: str, label: str, *, tail_parts: int = 2) -> bool:
-    """
-    Index JSON stores absolute paths from the machine that ran prebuild (e.g. /home/cc/...).
-    Docker training uses the same files at /data/... — exact resolve() differs but the path tail
-    (e.g. Raw-Data/extracted) should match.
-    """
-    want_r = want.resolve()
-    stored_p = Path(stored_raw).expanduser()
-    try:
-        got_r = stored_p.resolve()
-    except (OSError, RuntimeError):
-        got_r = stored_p
-    if want_r == got_r:
-        return True
-    wt, st = want_r.parts, stored_p.parts
-    if len(wt) >= tail_parts and len(st) >= tail_parts and wt[-tail_parts:] == st[-tail_parts:]:
-        print(
-            f"sam_instance_index: {label} prefix differs (index {stored_raw!r} vs run {want_r}); "
-            f"accepting matching path tail {wt[-tail_parts:]!r}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return True
-    return False
-
-
 def load_sam_instance_index_entries(
     index_path: Path, data_cfg: dict, split: str
 ) -> List[Tuple[Path, int]]:
@@ -164,14 +82,13 @@ def load_sam_instance_index_entries(
     ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
     ar = Path(data_cfg["annotation_root"]).expanduser().resolve()
 
-    def _must_match(name: str, want: Path, got_raw: str, *, tail_parts: int = 2) -> None:
-        if _index_path_compatible(want, got_raw, name, tail_parts=tail_parts):
-            return
-        raise ValueError(
-            f"sam_instance_index {name} mismatch: index has {got_raw!r}, config has {want}. "
-            "Rebuild the index on this machine, fix data paths, or ensure the last path segments match "
-            "(e.g. .../Raw-Data/extracted vs /data/Raw-Data/extracted)."
-        )
+    def _must_match(name: str, want: Path, got_raw: str) -> None:
+        got = Path(got_raw).expanduser().resolve()
+        if got != want:
+            raise ValueError(
+                f"sam_instance_index {name} mismatch: index has {got}, config has {want}. "
+                "Rebuild the index or fix data paths."
+            )
 
     _must_match("data_dir", dd, payload["data_dir"])
     _must_match("embeddings_dir", ed, payload["embeddings_dir"])
@@ -234,14 +151,10 @@ def collect_encoder_pairs(data_cfg: dict) -> List[Tuple[Path, Path]]:
 
     dd = Path(data_cfg["data_dir"]).expanduser().resolve()
     ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
-    _path_hint = (
-        " YAML often uses /data/... inside Docker; on the host use the real synced tree "
-        "(e.g. ~/training-data/Raw-Data/extracted from setup_host.sh)."
-    )
     if not dd.is_dir():
-        raise FileNotFoundError(f"data_dir not found: {dd}.{_path_hint}")
+        raise FileNotFoundError(f"data_dir not found: {dd}")
     if not ed.is_dir():
-        raise FileNotFoundError(f"embeddings_dir not found: {ed}.{_path_hint}")
+        raise FileNotFoundError(f"embeddings_dir not found: {ed}")
 
     pairs: List[Tuple[Path, Path]] = []
     for p in sorted(dd.iterdir()):
@@ -578,14 +491,6 @@ class SA1BSamDataset(Dataset):
                 progress_label=progress_label,
             )
 
-        if split:
-            self.samples = subsample_sam_instance_rows(
-                self.samples,
-                split=split,
-                data_cfg=data_cfg,
-                progress_label=progress_label,
-            )
-
     def __len__(self) -> int:
         return len(self.samples)
 
@@ -615,7 +520,11 @@ class SA1BSamDataset(Dataset):
         box = _box_xyxy_resized_from_ann_or_mask(ann, oh, ow, nh, nw, mask_s)
 
         sam_image = torch.from_numpy(rgb_s).permute(2, 0, 1).float()
-        low_tgt = cv2.resize(mask_s, (self.low_res, self.low_res), interpolation=cv2.INTER_NEAREST)
+        padded = np.zeros((SAM_ENCODER_PAD_SIDE, SAM_ENCODER_PAD_SIDE), dtype=np.float32)
+        padded[0:nh, 0:nw] = mask_s.astype(np.float32, copy=False)
+        low_tgt = cv2.resize(
+            padded, (self.low_res, self.low_res), interpolation=cv2.INTER_NEAREST
+        )
         low_tgt_t = torch.from_numpy(low_tgt).float().unsqueeze(0)
 
         return {
@@ -694,9 +603,16 @@ def build_sam_loaders(
 ):
     if not data_cfg.get("annotation_root"):
         return None, None, None
-    train_ds = SA1BSamDataset(jpg_splits["train"], data_cfg, progress_label="train", split="train")
-    val_ds = SA1BSamDataset(jpg_splits["val"], data_cfg, progress_label="val", split="val")
-    test_ds = SA1BSamDataset(jpg_splits["test"], data_cfg, progress_label="test", split="test")
+    img_sz = int(data_cfg.get("image_size", 1024))
+    train_ds = SA1BSamDataset(
+        jpg_splits["train"], data_cfg, img_size=img_sz, progress_label="train", split="train"
+    )
+    val_ds = SA1BSamDataset(
+        jpg_splits["val"], data_cfg, img_size=img_sz, progress_label="val", split="val"
+    )
+    test_ds = SA1BSamDataset(
+        jpg_splits["test"], data_cfg, img_size=img_sz, progress_label="test", split="test"
+    )
 
     def collate(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return batch

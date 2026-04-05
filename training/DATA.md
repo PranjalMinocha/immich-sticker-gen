@@ -11,19 +11,6 @@ On the GPU host, **`training/setup_host.sh`** (see README):
 
 The training container bind-mounts that directory read-only, e.g. **`-v ~/training-data:/data:ro`**. In YAML set **`data.data_dir`** and **`data.embeddings_dir`** to the matching paths under **`/data`** (see **`configs/chameleon_docker.yaml`**).
 
-### Bare metal on the instance (no Docker)
-
-**`/data/...` does not exist** unless you create it (e.g. `sudo mkdir -p /data && sudo ln -s "$HOME/training-data" /data`). Otherwise copy a config that uses **host paths**, for example:
-
-```yaml
-data:
-  data_dir: /home/cc/training-data/Raw-Data/extracted
-  embeddings_dir: /home/cc/training-data/Teacher-Embeddings/sa_000000
-  annotation_root: /home/cc/training-data/Raw-Data/extracted   # or wherever your JSON lives
-```
-
-Adjust **`cc`** and shard folder names to match **`setup_host.sh`** / **`LOCAL_DATA_ROOT`**. Use the **same paths** for `python3 prebuild_*.py --config ...` and for `train.py`.
-
 ## How training reads data
 
 The training code **does not** load your entire dataset into RAM. It uses PyTorch `DataLoader` workers that **open each `.jpg` / `.npy` (and optional `.json`) on demand** from the configured paths.
@@ -77,11 +64,3 @@ python3 prebuild_sam_instance_index.py --config ~/training_out/run.yaml
 ```
 
 Use the **same YAML** as `train.py` so paths and split rules match. After the JSON exists under **`data_dir`**, Docker training starts without rescanning all images.
-
-## Subsampling instance rows (shorter epochs, no re-index)
-
-Optional **`data.sam_instance_frac`** in **`(0, 1]`** (default **`1.0`**): after loading the full train/val lists (from the index or a live scan), keep a **random subset** of that fraction for **both** train and val. Reproducible for a given **`data.seed`**. Does **not** change the JSON on disk.
-
-**Test split:** the **test** loader always uses at most **`1000`** instance rows for final IoU, chosen with a **fixed RNG seed** in code (independent of **`data.seed`**) so eval is comparable across runs. If the full test split has fewer than 1000 rows, all are used.
-
-MLflow logs **`sam_instance_frac`**, **`sam_train_instances_effective`**, **`sam_val_instances_effective`**, **`sam_test_instances_effective`**.

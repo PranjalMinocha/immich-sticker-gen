@@ -19,8 +19,6 @@ data:
   test_frac: 0.2
   split_manifest: null
   num_workers: 4
-  # Optional: fraction of train+val INSTANCE rows (0,1]; default 1.0. Test capped to 1000 rows in code.
-  # sam_instance_frac: 0.05
 
 sam:
   multimask_output: false
