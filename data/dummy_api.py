@@ -69,7 +69,7 @@ async def upload_image(user_id: int = Form(...), file: UploadFile = File(...)):
     return {"image_id": image_id, "status": "uploaded"}
 
 @app.post("/sticker/generate")
-def generate_initial_sticker(image_id: int = Form(...), bbox: str = Form(...), point_coords: str = Form(...)):
+def generate_initial_sticker(image_id: int = Form(...), user_id: int = Form(...), bbox: str = Form(...), point_coords: str = Form(...)):
     """Phase 1: User draws the box, model makes its first guess."""
     processing_time = random.uniform(0.5, 1.5)
     time.sleep(processing_time)
@@ -82,10 +82,10 @@ def generate_initial_sticker(image_id: int = Form(...), bbox: str = Form(...), p
     cur.execute(
         """
         INSERT INTO sticker_generations 
-        (image_id, bbox, point_coords, ml_suggested_mask, processing_time_ms, saved, num_tries, edited_pixels) 
-        VALUES (%s, %s, %s, %s, %s, NULL, 1, 0) RETURNING generation_id;
+        (image_id, user_id, bbox, point_coords, ml_suggested_mask, processing_time_ms, saved, num_tries, edited_pixels) 
+        VALUES (%s, %s, %s, %s, %s, %s, NULL, 1, 0) RETURNING generation_id;
         """,
-        (image_id, bbox, point_coords, mock_rle_mask, int(processing_time * 1000))
+        (image_id, user_id, bbox, point_coords, mock_rle_mask, int(processing_time * 1000)) 
     )
     gen_id = cur.fetchone()['generation_id']
     conn.commit()
