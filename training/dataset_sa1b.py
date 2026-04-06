@@ -73,26 +73,19 @@ def _jpg_from_rel(rel: str, data_dir: Path) -> Path:
 def load_sam_instance_index_entries(
     index_path: Path, data_cfg: dict, split: str
 ) -> List[Tuple[Path, int]]:
-    """Load (jpg_path, ann_idx) list for a split; validates paths match current data_cfg."""
+    """
+    Load (jpg_path, ann_idx) list for a split.
+
+    All filesystem roots come from ``data_cfg`` (YAML). The index only supplies
+    ``jpg_rel`` paths relative to ``data.data_dir`` and split membership; stored
+    ``data_dir`` / ``embeddings_dir`` / ``annotation_root`` in the JSON are ignored
+    so the same file works across host vs container mount paths.
+    """
     payload = json.loads(index_path.read_text(encoding="utf-8"))
     if int(payload.get("format_version", -1)) != SAM_INSTANCE_INDEX_VERSION:
         raise ValueError(f"Unsupported sam_instance_index format in {index_path}")
 
     dd = Path(data_cfg["data_dir"]).expanduser().resolve()
-    ed = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
-    ar = Path(data_cfg["annotation_root"]).expanduser().resolve()
-
-    def _must_match(name: str, want: Path, got_raw: str) -> None:
-        got = Path(got_raw).expanduser().resolve()
-        if got != want:
-            raise ValueError(
-                f"sam_instance_index {name} mismatch: index has {got}, config has {want}. "
-                "Rebuild the index or fix data paths."
-            )
-
-    _must_match("data_dir", dd, payload["data_dir"])
-    _must_match("embeddings_dir", ed, payload["embeddings_dir"])
-    _must_match("annotation_root", ar, payload["annotation_root"])
 
     cfg_manifest = data_cfg.get("split_manifest")
     cfg_m_path = Path(cfg_manifest).resolve() if cfg_manifest else None
@@ -100,10 +93,18 @@ def load_sam_instance_index_entries(
     idx_m_path = Path(idx_manifest_raw).resolve() if idx_manifest_raw else None
 
     if idx_m_path is not None:
-        if cfg_m_path is None or cfg_m_path != idx_m_path:
+        if cfg_m_path is None:
             raise ValueError(
-                f"sam_instance_index was built with split_manifest={idx_m_path}; "
-                f"training data.split_manifest must be the same path (got {cfg_m_path})."
+                "sam_instance_index was built with split_manifest; set data.split_manifest in YAML "
+                "(path is resolved from config only; it need not match the path stored in the index)."
+            )
+        if cfg_m_path != idx_m_path:
+            print(
+                f"sam_instance_index: split_manifest path in index ({idx_m_path}) differs from "
+                f"config ({cfg_m_path}); using config path. Ensure the manifest content matches "
+                f"how the index was built.",
+                file=sys.stderr,
+                flush=True,
             )
     else:
         seed = int(data_cfg.get("seed", 42))

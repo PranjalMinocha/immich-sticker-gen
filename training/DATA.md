@@ -53,7 +53,7 @@ Building the per-instance list scans every JPG and decodes every mask once; that
 - **Default file** (auto-loaded if present): **`{data_dir}/sam_instance_index/sam_instances_v1.json`**
 - **Or** set **`data.sam_instance_index`** in YAML to an explicit path.
 
-The index must match **`data_dir`**, **`embeddings_dir`**, **`annotation_root`**, and the same **split** definition as training (**`data.split_manifest`** path, or **`seed` + `train_frac` / `val_frac` / `test_frac`**). If you change any of those or the masks, rebuild the file.
+Training resolves **`data_dir`**, **`embeddings_dir`**, and **`annotation_root`** only from YAML. The index lists **`jpg_rel`** (under `data_dir`) and **`ann_idx`**; paths embedded in the JSON for those roots are **not** validated, so one index file works with host or container mounts. The **split policy** must still match how the index was built: if the index used **`data.split_manifest`**, your YAML must set **`split_manifest`** (any path to the same manifest); otherwise **`seed`** and **`train_frac` / `val_frac` / `test_frac`** must match the index. If you change splits or masks, rebuild the file.
 
 **One-off script** (not in git — see repo **`.gitignore`**): copy **`training/prebuild_sam_instance_index.py`** onto the host (or create it from your checkout before it was ignored), then:
 
