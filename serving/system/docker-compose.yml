@@ -71,7 +71,7 @@ services:
     build:
       context: ..
       dockerfile: system/fastapi_app/Dockerfile
-    entrypoint: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+    entrypoint: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
     volumes:
       - serving_data:/data
     environment:

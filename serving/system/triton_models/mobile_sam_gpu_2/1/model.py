@@ -37,25 +37,13 @@ class TritonPythonModel:
         import onnxruntime as ort
         device_id = int(args.get("model_instance_device_id", 0))
         data_dir  = os.environ.get("MODEL_DIR", "/data")
-        opts      = [{"device_id": device_id}, {}]
+        opts      = [{"device_id": device_id, "gpu_mem_limit": 1 * 1024 * 1024 * 1024}, {}]
         self.enc_sess = ort.InferenceSession(
             os.path.join(data_dir, "mobile_sam_encoder.onnx"),
             providers=PROVIDERS, provider_options=opts)
         self.dec_sess = ort.InferenceSession(
             os.path.join(data_dir, "mobile_sam_decoder.onnx"),
             providers=PROVIDERS, provider_options=opts)
-        # Warmup: trigger MIOpen kernel find/compile at init time
-        dummy_img = np.zeros((1, 3, 1024, 1024), dtype=np.float32)
-        (dummy_emb,) = self.enc_sess.run(["image_embeddings"], {"image": dummy_img})
-        self.dec_sess.run(
-            ["masks", "iou_predictions", "low_res_masks"],
-            {"image_embeddings": dummy_emb,
-             "point_coords":     np.zeros((1, 5, 2), dtype=np.float32),
-             "point_labels":     np.array([[1, -1, -1, -1, -1]], dtype=np.float32),
-             "mask_input":       np.zeros((1, 1, 256, 256), dtype=np.float32),
-             "has_mask_input":   np.array([0], dtype=np.float32),
-             "orig_im_size":     np.array([1024, 1024], dtype=np.float32)},
-        )
 
     def execute(self, requests):
         responses = []
