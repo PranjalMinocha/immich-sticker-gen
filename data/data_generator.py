@@ -73,15 +73,18 @@ def process_file_pair(jpg_path, json_path):
     user_id = res.json()["user_id"]
     
     filename = os.path.basename(jpg_path)
+    print(f"[{username}] Fetching {filename} from S3...")
     
-    with open(jpg_path, "rb") as f:
-        files = {'file': (filename, f, "image/jpeg")}
-        upload_res = requests.post(f"{API_BASE_URL}/upload", data={'user_id': user_id}, files=files)
+    img_obj = s3.get_object(Bucket=RAW_BUCKET, Key=jpg_path)
+    img_bytes = img_obj['Body'].read()
+    
+    files = {'file': (filename, img_bytes, "image/jpeg")}
+    upload_res = requests.post(f"{API_BASE_URL}/upload", data={'user_id': user_id}, files=files)
         
     upload_id = upload_res.json()["upload_id"]
     
-    with open(json_path, "r") as jf:
-        data = json.load(jf)
+    ann_obj = s3.get_object(Bucket=RAW_BUCKET, Key=json_path)
+    data = json.loads(ann_obj['Body'].read().decode('utf-8'))
         
     if "annotations" in data and len(data["annotations"]) > 0:
         # Simulate a user creating between 1 and 3 stickers from the same image
