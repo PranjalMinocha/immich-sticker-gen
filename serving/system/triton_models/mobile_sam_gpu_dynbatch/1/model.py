@@ -37,7 +37,7 @@ class TritonPythonModel:
         import onnxruntime as ort
         device_id = int(args.get("model_instance_device_id", 0))
         data_dir  = os.environ.get("MODEL_DIR", "/data")
-        opts      = [{"device_id": device_id, "gpu_mem_limit": 1 * 1024 * 1024 * 1024}, {}]
+        opts      = [{"device_id": device_id, "gpu_mem_limit": 2 * 1024 * 1024 * 1024}, {}]
         self.enc_sess = ort.InferenceSession(
             os.path.join(data_dir, "mobile_sam_encoder.onnx"),
             providers=PROVIDERS, provider_options=opts)
