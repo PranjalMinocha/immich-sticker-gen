@@ -2,20 +2,18 @@
 MobileSAM FastAPI inference endpoint — NVIDIA GPU (onnxruntime-gpu).
 
 POST /predict
-  Input:  { "image": "<base64 jpg>",
-            "box": [x1,y1,x2,y2] }   OR   { "point": [x, y] }
-  Output: { "mask": "<base64 png>",
-            "inference_ms": float, "encoder_ms": float, "decoder_ms": float }
+  Input:  { "image": "<base64>", "box": [x1,y1,x2,y2] }
+       OR { "image": "<base64>", "point": [x, y] }
+  Output: { "mask": "<base64 png>", "inference_ms": float, "encoder_ms": float, "decoder_ms": float }
 """
 from __future__ import annotations
 
-import base64, io, os, time, warnings
-warnings.filterwarnings("ignore")
+import base64, io, os, time
 
 import cv2
 import numpy as np
 import onnxruntime as ort
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
@@ -60,6 +58,9 @@ def _preprocess(image_rgb: np.ndarray, size: int = 1024) -> np.ndarray:
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
+    if not req.box and not req.point:
+        raise HTTPException(status_code=422, detail="Provide either 'box' or 'point'")
+
     t_total = time.perf_counter()
 
     image = np.array(Image.open(io.BytesIO(base64.b64decode(req.image))).convert("RGB"))
@@ -69,17 +70,17 @@ def predict(req: PredictRequest):
     (embedding,) = enc_sess.run(["image_embeddings"], {"image": _preprocess(image)})
     encoder_ms = (time.perf_counter() - t0) * 1e3
 
+    # SamOnnxModel normalises coords by dividing by 1024, so scale from
+    # original image space to the resized 1024 space before passing in.
+    scale = 1024 / max(orig_h, orig_w)
     if req.box:
-        x1, y1, x2, y2 = req.box
+        x1, y1, x2, y2 = [c * scale for c in req.box]
         point_coords = np.array([[[x1,y1],[x2,y2],[0,0],[0,0],[0,0]]], dtype=np.float32)
         point_labels = np.array([[2, 3, -1, -1, -1]],                  dtype=np.float32)
-    elif req.point:
-        px, py = req.point
+    else:
+        px, py = req.point[0] * scale, req.point[1] * scale
         point_coords = np.array([[[px,py],[0,0],[0,0],[0,0],[0,0]]], dtype=np.float32)
         point_labels = np.array([[1, -1, -1, -1, -1]],               dtype=np.float32)
-    else:
-        point_coords = np.array([[[orig_w/2,orig_h/2],[0,0],[0,0],[0,0],[0,0]]], dtype=np.float32)
-        point_labels = np.array([[1, -1, -1, -1, -1]],                           dtype=np.float32)
 
     t0 = time.perf_counter()
     masks, _, _ = dec_sess.run(

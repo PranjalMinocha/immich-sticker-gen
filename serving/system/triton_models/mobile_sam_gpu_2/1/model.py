@@ -71,13 +71,14 @@ class TritonPythonModel:
             (embed,) = self.enc_sess.run(["image_embeddings"], {"image": _preprocess(image)})
             enc_ms = (time.perf_counter() - t0) * 1e3
 
+            scale = 1024 / max(orig_h, orig_w)
             if all(v >= 0 for v in box):
-                x1, y1, x2, y2 = box
+                x1, y1, x2, y2 = [c * scale for c in box]
                 point_coords = np.array([[[x1,y1],[x2,y2],[0,0],[0,0],[0,0]]], dtype=np.float32)
                 point_labels = np.array([[2, 3, -1, -1, -1]],                  dtype=np.float32)
             else:
-                point_coords = np.array([[[orig_w/2,orig_h/2],[0,0],[0,0],[0,0],[0,0]]], dtype=np.float32)
-                point_labels = np.array([[1, -1, -1, -1, -1]],                           dtype=np.float32)
+                point_coords = np.array([[[orig_w/2*scale,orig_h/2*scale],[0,0],[0,0],[0,0],[0,0]]], dtype=np.float32)
+                point_labels = np.array([[1, -1, -1, -1, -1]],                                       dtype=np.float32)
 
             t0 = time.perf_counter()
             masks, _, _ = self.dec_sess.run(

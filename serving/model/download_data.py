@@ -14,7 +14,7 @@ SHARD_URL = (
     "CW5sVXhQ0W2iYlA4GO1vtsjm6IY-yYw&oe=69F57028&_nc_sid=0fdd51"
 )
 CHECKPOINT_URL = (
-    "https://huggingface.co/dhkim2810/MobileSAM/resolve/main/mobile_sam.pt"
+    "https://github.com/ChaoningZhang/MobileSAM/raw/refs/heads/master/weights/mobile_sam.pt"
 )
 
 DATA_DIR   = Path(os.environ.get("DATA_DIR", "/data"))
