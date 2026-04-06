@@ -49,9 +49,11 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 Training is **single-GPU only** (`python3 train.py`). Do not use **`torchrun --nproc_per_node` > 1**.
 
-**Large instance counts:** with **`annotation_root`**, SAM IoU evaluation (merged encoder at end of **`encoder_distill`**, or val each epoch / test at end in **`full_sam`**) iterates dataloaders. Full splits can be **200k+ instances** and appear hung. Cap eval with **`train.sam_instance_frac`**: a fraction in **`(0, 1]`** of that loader’s batch count (`ceil(frac * len(loader))`, at least **1** batch). Use **`1.0`** for a full pass. If **`sam_instance_frac`** is **omitted**, eval uses **500** batches by default. A tqdm bar shows progress.
+**Large instance counts:** with **`annotation_root`**, SAM IoU evaluation (merged encoder at end of **`encoder_distill`**, or val each epoch / test at end in **`full_sam`**) iterates dataloaders. Full splits can be **200k+ instances** and appear hung. Cap eval with **`train.sam_instance_frac`**: a fraction in **`(0, 1]`** of that loader’s batch count (`ceil(frac * len(loader))`, at least **1** batch). Use **`1.0`** for a full pass. If **`sam_instance_frac`** is **omitted**, eval uses **500** batches by default. A tqdm bar shows progress. (**Legacy:** if you put **`sam_instance_frac` under `data`**, training copies it into the effective train config and prints a stderr hint—prefer **`train.sam_instance_frac`**.)
 
 **Encoder distillation:** held-out **test** is evaluated only via **SAM mask IoU** on the merged model when **`annotation_root`** is set (no separate final **test** embedding loss / cosine on the distill objective).
+
+**MLflow troubleshooting:** Use the experiment name from your YAML (**`mlflow.experiment_name`**, e.g. `mobilesam-train`). Training logs **parameters** first, then **metrics** (`train_loss_batch`, `val_embedding_loss`, …) during epochs. **System metrics** (CPU/RAM/disk) require a recent MLflow client and server; if `start_run(log_system_metrics=True)` fails, training retries **without** system metrics and continues logging model metrics—check stderr for the fallback message. Ensure **`MLFLOW_TRACKING_URI`** (if set) matches **`mlflow.tracking_uri`** in config.
 
 ---
 

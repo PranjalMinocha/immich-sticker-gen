@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 import time
 from itertools import islice
 from pathlib import Path
@@ -84,11 +85,28 @@ def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
 _DEFAULT_SAM_INSTANCE_EVAL_BATCHES = 500
 
 
+def effective_train_cfg_for_eval(train_cfg: dict, data_cfg: dict) -> dict:
+    """
+    Shallow copy of ``train`` with optional ``sam_instance_frac`` promoted from ``data``
+    (legacy / mistaken YAML placement under ``data.sam_instance_frac``).
+    """
+    out = dict(train_cfg)
+    if "sam_instance_frac" not in out and data_cfg.get("sam_instance_frac") is not None:
+        out["sam_instance_frac"] = data_cfg["sam_instance_frac"]
+        print(
+            "Note: sam_instance_frac was read from data.* — use train.sam_instance_frac in YAML.",
+            file=sys.stderr,
+            flush=True,
+        )
+    return out
+
+
 def resolve_eval_max_batches(train_cfg: dict, loader: DataLoader) -> Optional[int]:
     """
     Batch cap for SAM IoU eval (``full_sam`` val/test, ``encoder_distill`` merged test).
 
-    - ``train.sam_instance_frac``: fraction in ``(0, 1]`` of ``len(loader)`` batches,
+    - ``train.sam_instance_frac`` (or legacy ``data.sam_instance_frac`` via
+      ``effective_train_cfg_for_eval``): fraction in ``(0, 1]`` of ``len(loader)`` batches,
       ``max(1, ceil(frac * n_batches))``. Use ``1.0`` for the full loader.
     - If **unset**, default ``_DEFAULT_SAM_INSTANCE_EVAL_BATCHES`` batches (same as previous
       implicit cap).
@@ -103,6 +121,21 @@ def resolve_eval_max_batches(train_cfg: dict, loader: DataLoader) -> Optional[in
             return None
         return max(1, int(math.ceil(frac * n_batches)))
     return _DEFAULT_SAM_INSTANCE_EVAL_BATCHES
+
+
+def _mlflow_start_run_safe(run_name: Optional[str]) -> None:
+    """Start MLflow run; fall back without system metrics if the server rejects them."""
+    try:
+        mlflow.start_run(run_name=run_name, log_system_metrics=True)
+    except Exception as e:
+        print(
+            f"mlflow.start_run(log_system_metrics=True) failed ({e!r}); retrying without system metrics.",
+            file=sys.stderr,
+            flush=True,
+        )
+        if mlflow.active_run():
+            mlflow.end_run()
+        mlflow.start_run(run_name=run_name, log_system_metrics=False)
 
 
 def _log_mlflow_eval_batch_cap(train_cfg: dict) -> None:
@@ -484,8 +517,8 @@ def run_encoder_distill(
     mobilesam_root: Path,
     device: torch.device,
 ) -> None:
-    train_cfg = cfg["train"]
     data_cfg = cfg["data"]
+    train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
     out_cfg = cfg.get("output", {})
     output_dir = Path(out_cfg.get("dir", "./training_outputs")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -608,26 +641,26 @@ def run_encoder_distill(
 
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
-    mlflow.start_run(run_name=run_name, log_system_metrics=True)
-    for k, v in flat_params.items():
-        mlflow.log_param(k, v)
-    mlflow.log_param("config_path", str(cfg_path))
-    mlflow.log_param("mobilesam_root", str(mobilesam_root))
-    for k, v in split_meta.items():
-        if k != "counts":
-            mlflow.log_param(f"split_{k}", str(v))
-    if "counts" in split_meta:
-        for sk, sv in split_meta["counts"].items():
-            mlflow.log_param(f"split_count_{sk}", sv)
-    for k, v in gpu_env_info().items():
-        mlflow.log_param(f"env_{k}", v)
-    _log_mlflow_eval_batch_cap(train_cfg)
-    if split_out.is_file():
-        mlflow.log_artifact(str(split_out), artifact_path="split")
-
-    _mlflow_log_gpu_metric_init()
-
     try:
+        _mlflow_start_run_safe(run_name)
+        for k, v in flat_params.items():
+            mlflow.log_param(k, v)
+        mlflow.log_param("config_path", str(cfg_path))
+        mlflow.log_param("mobilesam_root", str(mobilesam_root))
+        for k, v in split_meta.items():
+            if k != "counts":
+                mlflow.log_param(f"split_{k}", str(v))
+        if "counts" in split_meta:
+            for sk, sv in split_meta["counts"].items():
+                mlflow.log_param(f"split_count_{sk}", sv)
+        for k, v in gpu_env_info().items():
+            mlflow.log_param(f"env_{k}", v)
+        _log_mlflow_eval_batch_cap(train_cfg)
+        if split_out.is_file():
+            mlflow.log_artifact(str(split_out), artifact_path="split")
+
+        _mlflow_log_gpu_metric_init()
+
         epoch_bar = tqdm(
             range(1, epochs + 1),
             desc="Epochs",
@@ -786,8 +819,8 @@ def run_full_sam(
     mobilesam_root: Path,
     device: torch.device,
 ) -> None:
-    train_cfg = cfg["train"]
     data_cfg = cfg["data"]
+    train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
     if not data_cfg.get("annotation_root"):
         raise ValueError("full_sam requires data.annotation_root with mask JSON per image.")
     out_cfg = cfg.get("output", {})
@@ -876,25 +909,25 @@ def run_full_sam(
 
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
-    mlflow.start_run(run_name=run_name, log_system_metrics=True)
-    for k, v in flat_params.items():
-        mlflow.log_param(k, v)
-    mlflow.log_param("config_path", str(cfg_path))
-    for k, v in split_meta.items():
-        if k != "counts":
-            mlflow.log_param(f"split_{k}", str(v))
-    if "counts" in split_meta:
-        for sk, sv in split_meta["counts"].items():
-            mlflow.log_param(f"split_count_{sk}", sv)
-    for k, v in gpu_env_info().items():
-        mlflow.log_param(f"env_{k}", v)
-    _log_mlflow_eval_batch_cap(train_cfg)
-    if split_out.is_file():
-        mlflow.log_artifact(str(split_out), artifact_path="split")
-
-    _mlflow_log_gpu_metric_init()
-
     try:
+        _mlflow_start_run_safe(run_name)
+        for k, v in flat_params.items():
+            mlflow.log_param(k, v)
+        mlflow.log_param("config_path", str(cfg_path))
+        for k, v in split_meta.items():
+            if k != "counts":
+                mlflow.log_param(f"split_{k}", str(v))
+        if "counts" in split_meta:
+            for sk, sv in split_meta["counts"].items():
+                mlflow.log_param(f"split_count_{sk}", sv)
+        for k, v in gpu_env_info().items():
+            mlflow.log_param(f"env_{k}", v)
+        _log_mlflow_eval_batch_cap(train_cfg)
+        if split_out.is_file():
+            mlflow.log_artifact(str(split_out), artifact_path="split")
+
+        _mlflow_log_gpu_metric_init()
+
         train_sam_epochs(
             sam,
             sam_train,
