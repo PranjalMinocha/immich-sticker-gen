@@ -45,6 +45,9 @@ train:
   scheduler_gamma: 0.5
   log_interval_batches: 50
   show_progress: true
+  # SAM mask IoU eval (val each epoch, test at end): max batches (instances per batch).
+  # Default 500 if omitted. Use null for full split (100k–1M+ instances → very slow).
+  sam_eval_max_batches: 500
 
 mlflow:
   tracking_uri: http://127.0.0.1:5000

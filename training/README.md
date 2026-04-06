@@ -49,6 +49,8 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 Training is **single-GPU only** (`python3 train.py`). Do not use **`torchrun --nproc_per_node` > 1**.
 
+**Large instance counts:** with **`annotation_root`**, SAM IoU evaluation (merged encoder at end of **`encoder_distill`**, or val/test in **`full_sam`**) iterates the dataloader. Full test splits can be **200k+ instances** and appear hung. **`train.sam_eval_max_batches`** caps batches (default **500** if the key is omitted); set to **`null`** for a full run. A tqdm bar shows progress during SAM IoU eval.
+
 ---
 
 ## 1. Set up a training instance (Chameleon)

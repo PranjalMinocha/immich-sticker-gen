@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -78,6 +79,26 @@ def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
     return None
 
 
+def _sam_eval_max_batches(train_cfg: dict) -> Optional[int]:
+    """
+    Cap SAM mask IoU eval (val each epoch, test at end). Instance counts can be 200k+;
+    without a cap, eval looks hung for hours.
+
+    - Key **absent**: default ``500`` batches.
+    - **null** / **0** / negative: no cap (full loader).
+    - Positive int: that many batches.
+    """
+    if "sam_eval_max_batches" not in train_cfg:
+        return 500
+    raw = train_cfg["sam_eval_max_batches"]
+    if raw is None:
+        return None
+    v = int(raw)
+    if v <= 0:
+        return None
+    return v
+
+
 def _mlflow_log_gpu_metric_init() -> None:
     """AMD ROCm: pyrsmi and/or rocm-smi CLI; log backend + failure detail for debugging MLflow gaps."""
     init_rocm_smi_for_gpu_util_logging()
@@ -115,11 +136,28 @@ def eval_sam_loader_mean_iou(
     loader: DataLoader,
     device: torch.device,
     multimask_output: bool,
+    max_batches: Optional[int] = None,
+    show_progress: bool = True,
+    desc: str = "SAM IoU",
 ) -> float:
+    """
+    Mean low-res mask IoU over a DataLoader. Per-instance batches (list collate).
+
+    ``max_batches`` caps how many batches to run (default: all). Full SA-1B-style
+    test splits can be 200k+ instances — without a cap this step can take many hours
+    with no visible progress.
+    """
     sam.eval()
     tot = 0.0
     n = 0
-    for batch in loader:
+    if max_batches is not None:
+        iterable = islice(loader, max_batches)
+        total = max_batches
+    else:
+        iterable = loader
+        total = len(loader) if hasattr(loader, "__len__") else None
+    bar = tqdm(iterable, desc=desc, total=total, disable=not show_progress, leave=False)
+    for batch in bar:
         for b in batch:
             b["image"] = b["image"].to(device, non_blocking=True)
             b["boxes"] = b["boxes"].to(device, non_blocking=True)
@@ -324,6 +362,7 @@ def train_sam_epochs(
 ) -> None:
     show_tqdm = train_cfg.get("show_progress", True)
     log_iv = int(train_cfg.get("log_interval_batches", 50))
+    sam_eval_mb = _sam_eval_max_batches(train_cfg)
     global_step = epoch_offset * max(len(train_loader), 1)
 
     for epoch in range(1, epochs + 1):
@@ -395,7 +434,15 @@ def train_sam_epochs(
                 step=ep,
             )
         if val_loader is not None:
-            viou = eval_sam_loader_mean_iou(sam, val_loader, device, multimask_output)
+            viou = eval_sam_loader_mean_iou(
+                sam,
+                val_loader,
+                device,
+                multimask_output,
+                max_batches=sam_eval_mb,
+                show_progress=show_tqdm,
+                desc=f"SAM val IoU ep {ep}",
+            )
             mlflow.log_metric("val_mean_iou_lowres", viou, step=ep)
             n_prev = int(train_cfg.get("val_preview_samples", 3))
             if n_prev > 0 and staging_dir is not None:
@@ -561,6 +608,14 @@ def run_encoder_distill(
             mlflow.log_param(f"split_count_{sk}", sv)
     for k, v in gpu_env_info().items():
         mlflow.log_param(f"env_{k}", v)
+    smb = _sam_eval_max_batches(train_cfg)
+    if "sam_eval_max_batches" in train_cfg:
+        mlflow.log_param(
+            "sam_eval_max_batches",
+            "full" if smb is None else str(smb),
+        )
+    else:
+        mlflow.log_param("sam_eval_max_batches", f"default({smb})")
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
@@ -705,7 +760,15 @@ def run_encoder_distill(
                 device_is_cuda=torch.cuda.is_available(),
             )
             if sam_test is not None:
-                tiou = eval_sam_loader_mean_iou(sam, sam_test, device, multimask)
+                tiou = eval_sam_loader_mean_iou(
+                    sam,
+                    sam_test,
+                    device,
+                    multimask,
+                    max_batches=smb,
+                    show_progress=show_tqdm,
+                    desc="SAM test IoU (merged encoder)",
+                )
                 mlflow.log_metric("test_mean_iou_lowres", tiou)
 
         full_path = output_dir / "mobile_sam_full.pt"
@@ -829,6 +892,14 @@ def run_full_sam(
             mlflow.log_param(f"split_count_{sk}", sv)
     for k, v in gpu_env_info().items():
         mlflow.log_param(f"env_{k}", v)
+    smb_full = _sam_eval_max_batches(train_cfg)
+    if "sam_eval_max_batches" in train_cfg:
+        mlflow.log_param(
+            "sam_eval_max_batches",
+            "full" if smb_full is None else str(smb_full),
+        )
+    else:
+        mlflow.log_param("sam_eval_max_batches", f"default({smb_full})")
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
@@ -849,7 +920,15 @@ def run_full_sam(
             staging_dir=output_dir,
         )
         if sam_test is not None:
-            tiou = eval_sam_loader_mean_iou(sam, sam_test, device, multimask)
+            tiou = eval_sam_loader_mean_iou(
+                sam,
+                sam_test,
+                device,
+                multimask,
+                max_batches=smb_full,
+                show_progress=train_cfg.get("show_progress", True),
+                desc="SAM test IoU",
+            )
             mlflow.log_metric("test_mean_iou_lowres", tiou)
             full_path = output_dir / "mobile_sam_full.pt"
             save_sam_checkpoint(full_path, sam)
