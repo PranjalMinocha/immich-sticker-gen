@@ -1,0 +1,29 @@
+# Use a lightweight python base image
+FROM python:3.10-slim
+
+# Set the working directory
+WORKDIR /app
+
+# Install system dependencies (required for pillow/image processing)
+RUN apt-get update && apt-get install -y \
+    libjpeg-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies (Added scikit-learn for dataset splitting)
+RUN pip install --no-cache-dir \
+    boto3 \
+    requests \
+    pillow \
+    tqdm \
+    scikit-learn
+
+# Copy both data engineering scripts into the container
+COPY ingest_data.py /app/ingest_data.py
+COPY split_dataset.py /app/split_data.py
+
+# Set the entrypoint to python so we can pass the script name as an argument
+ENTRYPOINT ["python"]
+
+# Default command if none is provided
+CMD ["--help"]

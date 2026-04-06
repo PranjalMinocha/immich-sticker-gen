@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  ingest-data:
+    build: 
+      context: .
+      dockerfile: Dockerfile.ingest
+    env_file:
+      - .env 
+    command: [
+      "ingest_from_link.py", 
+      "--url", "https://scontent-phl2-1.xx.fbcdn.net/m1/v/t6/An_-m2SWozW4o-FatJEIY1Anj32x8TnUqad9WMAVkMaZHkDyHfjpLcVlQoTFhgQihg8U4R5KqJvoJrtBwT3eKH-Yj5-LfY0.tar?_nc_gid=PcFgPVoSsMqKDvKgOr5zJw&_nc_oc=Adq2c5srRedJ84iAVF1QohSl9rYosVjS9qxGn3pbMQUfXgiSKMDbTXaHGdUOVvlxucfcomANdrznwMLnDmpUym--&ccb=10-5&oh=00_Af3mz4o6hTEW1tm4yCgxAUF-qj1lha5nu6rcPlp_xVLLpw&oe=69FA47FE&_nc_sid=0fdd51"
+    ]
+
+  split-data:
+    build: 
+      context: .
+      dockerfile: Dockerfile.data-ops
+    volumes:
+      - ./dataset_storage:/app/data
+    command: >
+      split_dataset.py 
+      --source /app/data/extracted_sa1b_data 
+      --output /app/data/ml_dataset_split 
+      --seed 42
