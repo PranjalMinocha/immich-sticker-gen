@@ -10,7 +10,8 @@ from faker import Faker
 
 fake = Faker()
 API_BASE_URL = "http://dummy-api:8000"
-RESERVOIR_DIR = "/app/local_reservoir"
+
+ACTIVE_USERS = []
 
 # --- Chameleon S3 Setup ---
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
@@ -61,16 +62,30 @@ def apply_bbox_noise(bbox):
     return bbox
 
 def process_file_pair(jpg_path, json_path):
-    username = fake.user_name() + str(random.randint(100, 9999))
-    ml_opt_in = random.choice(["true", "false"])
+    global ACTIVE_USERS
     
-    res = requests.post(f"{API_BASE_URL}/users/register", data={
-        "username": username, "email": fake.email(), "ml_opt_in": ml_opt_in
-    })
-    
-    if "user_id" not in res.json():
-        return
-    user_id = res.json()["user_id"]
+    if ACTIVE_USERS and random.random() < 0.70:
+        user = random.choice(ACTIVE_USERS)
+        username = user['username']
+        user_id = user['user_id']
+        print(f"\n[{username}] Returning user logged in...")
+    else:
+        # Register a brand new user
+        username = fake.user_name() + str(random.randint(100, 9999))
+        ml_opt_in = random.choice(["true", "false"])
+        
+        res = requests.post(f"{API_BASE_URL}/users/register", data={
+            "username": username, "email": fake.email(), "ml_opt_in": ml_opt_in
+        })
+        
+        if "user_id" not in res.json():
+            return
+            
+        user_id = res.json()["user_id"]
+        
+        # Save them to the pool so they can return later!
+        ACTIVE_USERS.append({"user_id": user_id, "username": username})
+        print(f"\n[{username}] Brand new user registered!")
     
     filename = os.path.basename(jpg_path)
     print(f"[{username}] Fetching {filename} from S3...")
@@ -80,7 +95,7 @@ def process_file_pair(jpg_path, json_path):
     
     files = {'file': (filename, img_bytes, "image/jpeg")}
     upload_res = requests.post(f"{API_BASE_URL}/upload", data={'user_id': user_id}, files=files)
-        
+    
     upload_id = upload_res.json()["upload_id"]
     
     ann_obj = s3.get_object(Bucket=RAW_BUCKET, Key=json_path)
@@ -97,19 +112,48 @@ def process_file_pair(jpg_path, json_path):
             
             point_coords = ann.get("point_coords", [[noisy_bbox[0] + noisy_bbox[2]/2, noisy_bbox[1] + noisy_bbox[3]/2]])
             
-            num_tries = random.choices([1, 2, 3, 4, 5], weights=[60, 20, 10, 5, 5])[0]
-            edited_pixels = random.randint(500, 15000) if num_tries > 1 else 0
-            save_probability = 0.85 if num_tries < 4 else 0.30
-            saved = random.random() < save_probability
-
-            print(f"  -> [{username}] Generating sticker (tries: {num_tries}, saved: {saved})...")
-            requests.post(f"{API_BASE_URL}/generate_sticker", data={
+            # PHASE 1: Initial Generation
+            print(f"  -> [{username}] Requesting initial sticker...")
+            gen_res = requests.post(f"{API_BASE_URL}/sticker/generate", data={
                 "upload_id": upload_id,
                 "bbox": json.dumps(noisy_bbox),
-                "point_coords": json.dumps(point_coords),
-                "saved": saved,
-                "num_tries": num_tries,
-                "edited_pixels": edited_pixels
+                "point_coords": json.dumps(point_coords)
+            })
+            
+            if "generation_id" not in gen_res.json():
+                continue
+                
+            gen_id = gen_res.json()["generation_id"]
+            current_mask_state = gen_res.json()["ml_suggested_mask"] # Capture the model's guess
+            
+            total_tries = random.choices([1, 2, 3, 4, 5], weights=[60, 20, 10, 5, 5])[0]
+            
+            # PHASE 2: The Edit Loop
+            for attempt in range(total_tries - 1):
+                pixels_this_edit = random.randint(500, 5000)
+                print(f"    -> [{username}] Correcting mask (Attempt {attempt + 2})...")
+                
+                # Simulate the user editing the mask by altering the RLE string
+                current_mask_state += f"_edited_v{attempt + 1}"
+                
+                requests.put(f"{API_BASE_URL}/sticker/edit", data={
+                    "generation_id": gen_id,
+                    "new_edited_pixels": pixels_this_edit
+                })
+                time.sleep(random.uniform(0.5, 2.0)) 
+            
+            # PHASE 3: Save or Discard
+            save_probability = 0.85 if total_tries < 4 else 0.30
+            saved = random.random() < save_probability
+            
+            action_str = "SAVED" if saved else "DISCARDED"
+            print(f"    -> [{username}] {action_str} sticker.")
+            
+            # Send the final state of the mask back to the database
+            requests.post(f"{API_BASE_URL}/sticker/resolve", data={
+                "generation_id": gen_id,
+                "saved": "true" if saved else "false",
+                "user_saved_mask": current_mask_state
             })
 
 if __name__ == "__main__":

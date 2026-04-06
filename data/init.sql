@@ -17,12 +17,15 @@ CREATE TABLE image_uploads (
 
 CREATE TABLE sticker_generations (
     generation_id SERIAL PRIMARY KEY,
-    upload_id INTEGER REFERENCES image_uploads(upload_id),
+    user_id INTEGER REFERENCES users(user_id),
+    image_id INTEGER REFERENCES image_uploads(upload_id),
     bbox JSONB,
     point_coords JSONB,
+    ml_suggested_mask TEXT,
+    user_saved_mask TEXT,
     processing_time_ms INTEGER,
-    saved BOOLEAN,           -- NEW: Did the user save the sticker?
-    num_tries INTEGER,       -- NEW: How many attempts did it take?
-    edited_pixels INTEGER,   -- NEW: Difference between user and model mask
+    saved BOOLEAN,
+    num_tries INTEGER,
+    edited_pixels INTEGER,
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

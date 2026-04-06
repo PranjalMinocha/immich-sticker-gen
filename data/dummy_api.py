@@ -6,6 +6,7 @@ import random
 import os
 import boto3
 import json
+import string
 
 app = FastAPI()
 
@@ -67,31 +68,73 @@ async def upload_image(user_id: int = Form(...), file: UploadFile = File(...)):
     
     return {"upload_id": upload_id, "status": "uploaded"}
 
-@app.post("/generate_sticker")
-def generate_sticker(
-    upload_id: int = Form(...), 
-    bbox: str = Form(...), 
-    point_coords: str = Form(...),
-    saved: bool = Form(...),
-    num_tries: int = Form(...),
-    edited_pixels: int = Form(...)
-):
-    # Scale processing time based on how many tries it took
-    processing_time = random.uniform(0.5, 1.5) * num_tries
+@app.post("/sticker/generate")
+def generate_initial_sticker(upload_id: int = Form(...), bbox: str = Form(...), point_coords: str = Form(...)):
+    """Phase 1: User draws the box, model makes its first guess."""
+    processing_time = random.uniform(0.5, 1.5)
+    time.sleep(processing_time)
+    
+    # Simulate an ML model outputting an RLE compressed mask string
+    mock_rle_mask = "RLE_" + "".join(random.choices(string.ascii_uppercase + string.digits, k=40))
+    
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """
+        INSERT INTO sticker_generations 
+        (upload_id, bbox, point_coords, ml_suggested_mask, processing_time_ms, saved, num_tries, edited_pixels) 
+        VALUES (%s, %s, %s, %s, %s, NULL, 1, 0) RETURNING generation_id;
+        """,
+        (upload_id, bbox, point_coords, mock_rle_mask, int(processing_time * 1000))
+    )
+    gen_id = cur.fetchone()['generation_id']
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    # Return the mask to the frontend
+    return {"generation_id": gen_id, "ml_suggested_mask": mock_rle_mask}
+
+@app.put("/sticker/edit")
+def edit_sticker(generation_id: int = Form(...), new_edited_pixels: int = Form(...)):
+    """Phase 2: User corrects the mask. This can be called multiple times."""
+    processing_time = random.uniform(0.2, 0.8) # Edits are usually faster than initial generation
     time.sleep(processing_time)
     
     conn = get_db_connection()
     cur = conn.cursor()
+    # Increment the tries and add the new edited pixels to the running total
     cur.execute(
         """
-        INSERT INTO sticker_generations 
-        (upload_id, bbox, point_coords, processing_time_ms, saved, num_tries, edited_pixels) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s);
+        UPDATE sticker_generations 
+        SET num_tries = num_tries + 1,
+            edited_pixels = edited_pixels + %s,
+            processing_time_ms = processing_time_ms + %s
+        WHERE generation_id = %s;
         """,
-        (upload_id, bbox, point_coords, int(processing_time * 1000), saved, num_tries, edited_pixels)
+        (new_edited_pixels, int(processing_time * 1000), generation_id)
     )
     conn.commit()
     cur.close()
     conn.close()
     
-    return {"upload_id": upload_id, "saved": saved, "tries": num_tries}
+    return {"status": "edited", "generation_id": generation_id}
+
+@app.post("/sticker/resolve")
+def resolve_sticker(
+    generation_id: int = Form(...), 
+    saved: bool = Form(...),
+    user_saved_mask: str = Form(...) # NEW: Accept the final mask state
+):
+    """Phase 3: User saves or discards the final mask state."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE sticker_generations SET saved = %s, user_saved_mask = %s WHERE generation_id = %s;", 
+        (saved, user_saved_mask, generation_id)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    return {"status": "resolved", "saved": saved}
