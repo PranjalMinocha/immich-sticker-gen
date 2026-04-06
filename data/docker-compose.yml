@@ -1,48 +1,16 @@
 services:
-  ingest-data:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    volumes:
-      - ./ingest_data.py:/app/ingest_data.py
-    command: ["python", "ingest_data.py"]
-
-  split-data:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    volumes:
-      - ./split_data.py:/app/split_data.py
-    command: ["python", "split_data.py", "--seed", "42"]
-
-  minio:
-    image: minio/minio
-    ports:
-      - "9000:9000"  # The API Port (For Boto3/Python)
-      - "9001:9001"  # The UI Console Port (For your Web Browser)
-    environment:
-      - MINIO_ROOT_USER=admin          # This is your S3_ACCESS_KEY
-      - MINIO_ROOT_PASSWORD=password123 # This is your S3_SECRET_KEY
-    command: server /data --console-address ":9001" # <-- THIS LINE IS CRITICAL
-    volumes:
-      - minio_data:/data
-
+  # 1. DATABASE (Source of Truth)
   postgres:
     image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: sticker_gen
+    container_name: sticker-db
+    env_file: .env
     ports:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
+  # 2. DATABASE GUI (View tables at http://<ip>:8081)
   adminer:
     image: adminer
     ports:
@@ -50,12 +18,30 @@ services:
     depends_on:
       - postgres
 
+  # 3. DATA INGESTION (Phase 1)
+  ingest-data:
+    build: .
+    env_file: .env
+    volumes:
+      - ./ingest_data.py:/app/ingest_data.py
+    command: ["python", "ingest_data.py"]
+    depends_on:
+      - postgres
+
+  # 4. DATA SPLITTING (Phase 1)
+  split-data:
+    build: .
+    env_file: .env
+    volumes:
+      - ./split_data.py:/app/split_data.py
+    command: ["python", "split_data.py", "--seed", "42"]
+    depends_on:
+      - ingest-data
+
+  # 7. BACKEND API (Phase 2/3 + Online Features)
   dummy-api:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
+    build: .
+    env_file: .env
     ports:
       - "8000:8000"
     volumes:
@@ -64,19 +50,28 @@ services:
     depends_on:
       - postgres
 
+  # 8. TRAFFIC GENERATOR (Simulating Users)
   traffic-generator:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
+    build: .
+    env_file: .env
     volumes:
       - ./data_generator.py:/app/data_generator.py
     command: ["python", "data_generator.py"]
     depends_on:
       - dummy-api
 
-# Declare the persistent volume for the database
+  # 9. BATCH PIPELINE (The Lakehouse Compiler)
+  batch-pipeline:
+    build: .
+    env_file: .env
+    volumes:
+      - ./batch_pipeline.py:/app/batch_pipeline.py
+      - .:/app
+    # We use 'run' instead of 'up' for this, or leave it for manual triggers
+    profiles: ["batch"] 
+    command: ["python", "batch_pipeline.py"]
+    depends_on:
+      - postgres
+
 volumes:
   pg_data:
-  minio_data:
