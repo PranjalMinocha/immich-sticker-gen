@@ -19,7 +19,9 @@ spark = SparkSession.builder \
     .appName("ML_Training_Data_Compiler") \
     .config("spark.jars.packages", 
             "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.0,"
-            "org.postgresql:postgresql:42.6.0") \
+            "org.postgresql:postgresql:42.6.0,"
+            "org.apache.hadoop:hadoop-aws:3.3.4,"
+            "com.amazonaws:aws-java-sdk-bundle:1.12.262") \
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
     .config("spark.sql.catalog.lakehouse", "org.apache.iceberg.spark.SparkCatalog") \
     .config("spark.sql.catalog.lakehouse.type", "hadoop") \
@@ -29,6 +31,7 @@ spark = SparkSession.builder \
     .config("spark.hadoop.fs.s3a.secret.key", S3_SECRET_KEY) \
     .config("spark.hadoop.fs.s3a.path.style.access", "true") \
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
+    .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider") \
     .getOrCreate()
 
 def compile_training_batch():
@@ -37,15 +40,21 @@ def compile_training_batch():
     # --- 2. Extract Candidate Pool from Postgres ---
     # We push down the basic filters directly to the database for efficiency
     query = """
-    (SELECT sg.generation_id, sg.image_id, sg.user_id, sg.s3_sticker_key, 
-            sg.ml_suggested_mask, sg.user_saved_mask, iu.s3_object_key as raw_image_key
-     FROM sticker_generations sg
-     JOIN image_uploads iu ON sg.image_id = iu.image_id
-     JOIN users u ON sg.user_id = u.user_id
-     WHERE u.ml_training_opt_in = TRUE
-       AND sg.saved = TRUE
-       AND sg.edited_pixels < 2000
-       AND sg.used_for_training = FALSE) AS candidates
+    (SELECT 
+        generation_id, 
+        user_id, 
+        image_id, 
+        bbox::text as bbox, 
+        point_coords::text as point_coords, 
+        ml_suggested_mask, 
+        user_saved_mask, 
+        s3_sticker_key, 
+        processing_time_ms, 
+        num_tries, 
+        edited_pixels, 
+        generated_at
+    FROM sticker_generations 
+    WHERE saved = TRUE AND used_for_training = FALSE) AS training_candidates
     """
 
     df_candidates = spark.read.format("jdbc") \
