@@ -5,11 +5,11 @@ import boto3
 import argparse
 from tqdm import tqdm
 
-S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://localhost:9000")
-S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "admin")
-S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "password123")
+S3_ENDPOINT = os.getenv("S3_ENDPOINT")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
+RAW_BUCKET = os.getenv["RAW_BUCKET"]
 
-RAW_BUCKET = "objstore-proj28"
 
 s3 = boto3.client(
     's3',
