@@ -1,4 +1,4 @@
-# --- API & Database ---
+# --- Web API & Database ---
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
 python-multipart==0.0.9
@@ -8,7 +8,7 @@ boto3==1.34.0
 # --- Online Feature Computation & Image Processing ---
 numpy==1.26.4
 Pillow==10.2.0
-scikit-learn==1.4.1
+scikit-learn==1.8.0
 
 # --- Synthetic Data Generation ---
 requests==2.31.0
