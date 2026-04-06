@@ -15,7 +15,7 @@ services:
   split-data:
     build: 
       context: .
-      dockerfile: Dockerfile.data-ops
+      dockerfile: Dockerfile.ingest
     volumes:
       - ./dataset_storage:/app/data
     command: >
