@@ -10,8 +10,8 @@ Student TinyViT in encoder_distill is always random-init unless extended elsewhe
 
 Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
 System metrics (CPU/RAM/disk/GPU) use MLflow's collector (see start_run(log_system_metrics=True)).
-On **AMD ROCm** (e.g. Chameleon), **pyrsmi** drives both MLflow system GPU stats and **model** metrics
-`gpu_utilization_percent` / `gpu_memory_utilization_percent` sampled on the **training** GPU.
+On **AMD ROCm**, model metrics use **pyrsmi** and/or **`rocm-smi`**, plus **torch CUDA memory MiB**;
+see README and run params `gpu_util_backend` / `gpu_util_init_detail`.
 """
 from __future__ import annotations
 
@@ -51,9 +51,11 @@ from training_core import (
     flatten_cfg,
     git_sha,
     gpu_env_info,
+    gpu_util_logging_status,
     init_rocm_smi_for_gpu_util_logging,
     sample_gpu_memory_utilization_percent,
     sample_gpu_utilization_percent,
+    torch_cuda_memory_mib,
     _import_tiny_vit,
     _repo_root,
     _resolve_mobilesam_root,
@@ -74,6 +76,22 @@ def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
             )
         return str(path)
     return None
+
+
+def _mlflow_log_gpu_metric_init() -> None:
+    """AMD ROCm: pyrsmi and/or rocm-smi CLI; log backend + failure detail for debugging MLflow gaps."""
+    init_rocm_smi_for_gpu_util_logging()
+    backend, detail = gpu_util_logging_status()
+    if backend == "pyrsmi":
+        tag = "pyrsmi_rocm"
+    elif backend == "rocm_smi_cli":
+        tag = "rocm_smi_cli"
+    else:
+        tag = "unavailable"
+    mlflow.log_param("gpu_util_mlflow_metrics", tag)
+    mlflow.log_param("gpu_util_backend", backend)
+    if detail:
+        mlflow.log_param("gpu_util_init_detail", str(detail)[:900])
 
 
 def build_optimizer_sam(
@@ -338,6 +356,7 @@ def train_sam_epochs(
                 torch.cuda.synchronize(device)
             util_gpu = sample_gpu_utilization_percent(device)
             util_mem = sample_gpu_memory_utilization_percent(device)
+            mem_alloc, mem_res = torch_cuda_memory_mib(device)
             if util_gpu is not None:
                 epoch_gpu_util_sum += util_gpu
                 epoch_gpu_util_count += 1
@@ -349,6 +368,14 @@ def train_sam_epochs(
                 if util_mem is not None:
                     mlflow.log_metric(
                         "gpu_memory_utilization_percent", util_mem, step=global_step
+                    )
+                if mem_alloc is not None:
+                    mlflow.log_metric(
+                        "gpu_torch_memory_allocated_mib", mem_alloc, step=global_step
+                    )
+                if mem_res is not None:
+                    mlflow.log_metric(
+                        "gpu_torch_memory_reserved_mib", mem_res, step=global_step
                     )
 
             if show_tqdm:
@@ -537,11 +564,7 @@ def run_encoder_distill(
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
-    rocm_smi_ok = init_rocm_smi_for_gpu_util_logging()
-    mlflow.log_param(
-        "gpu_util_mlflow_metrics",
-        "pyrsmi_rocm" if rocm_smi_ok else "unavailable_pyrsmi_or_amdsmi",
-    )
+    _mlflow_log_gpu_metric_init()
 
     try:
         epoch_bar = tqdm(
@@ -581,6 +604,7 @@ def run_encoder_distill(
                     torch.cuda.synchronize(device)
                 util_gpu = sample_gpu_utilization_percent(device)
                 util_mem = sample_gpu_memory_utilization_percent(device)
+                mem_alloc, mem_res = torch_cuda_memory_mib(device)
                 if util_gpu is not None:
                     epoch_gpu_util_sum += util_gpu
                     epoch_gpu_util_count += 1
@@ -597,6 +621,14 @@ def run_encoder_distill(
                     if util_mem is not None:
                         mlflow.log_metric(
                             "gpu_memory_utilization_percent", util_mem, step=step
+                        )
+                    if mem_alloc is not None:
+                        mlflow.log_metric(
+                            "gpu_torch_memory_allocated_mib", mem_alloc, step=step
+                        )
+                    if mem_res is not None:
+                        mlflow.log_metric(
+                            "gpu_torch_memory_reserved_mib", mem_res, step=step
                         )
                 if show_tqdm:
                     batch_bar.set_postfix(loss=f"{loss_reduced.item():.4f}")
@@ -800,11 +832,7 @@ def run_full_sam(
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
-    rocm_smi_ok = init_rocm_smi_for_gpu_util_logging()
-    mlflow.log_param(
-        "gpu_util_mlflow_metrics",
-        "pyrsmi_rocm" if rocm_smi_ok else "unavailable_pyrsmi_or_amdsmi",
-    )
+    _mlflow_log_gpu_metric_init()
 
     try:
         train_sam_epochs(

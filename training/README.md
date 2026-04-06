@@ -41,7 +41,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 **System metrics:** each epoch logs CPU/RAM/disk (via **psutil**), GPU memory, and optional **`gpu_util_percent_rocm_smi`** when `rocm-smi` is available.
 
-**GPU utilization (model metrics, AMD ROCm):** install **`pyrsmi`** (in `requirements.txt` on Linux). Training logs **`gpu_utilization_percent`** (GFX busy), **`gpu_memory_utilization_percent`** (VRAM memory-busy, AMD SMI), and **`gpu_utilization_epoch_mean`**, sampled on the **same GPU index** PyTorch uses for training (single-GPU runs: typically device **0**; a second GPU on the node is not logged). Run param **`gpu_util_mlflow_metrics`** is **`pyrsmi_rocm`** when AMD SMI initializes, else **`unavailable_pyrsmi_or_amdsmi`**.
+**GPU utilization (model metrics, AMD ROCm):** training tries **`pyrsmi`** (`libamd_smi`) first; if that fails inside Docker, it falls back to parsing **`rocm-smi --showuse`** (ensure `rocm-smi` is on `PATH` in the image). It always logs **`gpu_torch_memory_allocated_mib`** and **`gpu_torch_memory_reserved_mib`** from PyTorch when on GPU. Also logged when available: **`gpu_utilization_percent`**, **`gpu_memory_utilization_percent`** (pyrsmi only), **`gpu_utilization_epoch_mean`**. Run params: **`gpu_util_mlflow_metrics`** (`pyrsmi_rocm` \| `rocm_smi_cli` \| `unavailable`), **`gpu_util_backend`**, and **`gpu_util_init_detail`** (pyrsmi import/init errors). Single-GPU training uses device **0** by default.
 
 **`full_sam` validation previews:** after each epoch’s val IoU, **`train.val_preview_samples`** (default **3**) PNGs are logged to MLflow under **`val_previews/epoch_XXXX/`**: RGB image, **box prompt** (same as training: COCO bbox or tight instance mask), predicted mask (green overlay), GT mask (red contour); filenames include **`ann=`** when applicable. Set **`val_preview_samples: 0`** to turn off. Steps per epoch scale with **instance count**, not image count—tune **`train.batch_size`** accordingly.
 
@@ -124,7 +124,7 @@ Point every run at the **team tracking server** (replace with your URI):
 export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
 ```
 
-**Metrics in the UI:** Runs use **`log_system_metrics=True`**, so MLflow records **System metrics** (names like `system/cpu_utilization_percentage`) in the **System metrics** tab. **Model metrics** (loss, learning rate, IoU, epoch time, **`gpu_utilization_percent`**, **`gpu_utilization_epoch_mean`**, etc.) come from `mlflow.log_metric` and appear under **Model metrics**. On **AMD ROCm**, **`pyrsmi`** (see `requirements.txt` on Linux) enables those GPU utilization model metrics and helps MLflow system GPU stats. If a run **stops before the first training log** (e.g. crash on batch 0), you may only see system samples and no loss curves yet.
+**Metrics in the UI:** Runs use **`log_system_metrics=True`** for **System metrics**. **Model metrics** include loss, IoU, **`gpu_torch_memory_allocated_mib`** (always on ROCm GPU), plus **`gpu_utilization_percent`** when **pyrsmi** or **`rocm-smi`** works—check **`gpu_util_init_detail`** if utilization is missing. If a run **stops before the first training log**, you may only see system samples and no loss curves yet.
 
 ---
 
