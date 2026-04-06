@@ -28,5 +28,6 @@ CREATE TABLE sticker_generations (
     saved BOOLEAN,
     num_tries INTEGER,
     edited_pixels INTEGER,
+    used_for_training BOOLEAN DEFAULT FALSE,
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

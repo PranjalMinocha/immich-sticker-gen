@@ -19,6 +19,18 @@ services:
       - ./split_data.py:/app/split_data.py
     command: ["python", "split_data.py", "--seed", "42"]
 
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"  # The API Port (For Boto3/Python)
+      - "9001:9001"  # The UI Console Port (For your Web Browser)
+    environment:
+      - MINIO_ROOT_USER=admin          # This is your S3_ACCESS_KEY
+      - MINIO_ROOT_PASSWORD=password123 # This is your S3_SECRET_KEY
+    command: server /data --console-address ":9001" # <-- THIS LINE IS CRITICAL
+    volumes:
+      - minio_data:/data
+
   postgres:
     image: postgres:15-alpine
     environment:
