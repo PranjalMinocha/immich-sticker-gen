@@ -153,7 +153,7 @@ def process_file_pair(jpg_path, json_path):
             # Send the final state of the mask back to the database
             requests.post(f"{API_BASE_URL}/sticker/resolve", data={
                 "generation_id": gen_id,
-                "saved": "true" if saved else "false",
+                "saved": saved,
                 "user_saved_mask": current_mask_state
             })
 
