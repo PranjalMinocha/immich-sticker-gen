@@ -24,7 +24,7 @@ s3 = boto3.client(
 
 def get_db_connection():
     return psycopg2.connect(
-        host="postgres", database="sticker_metrics", user="admin", password="password123"
+        host="postgres", database="sticker_gen", user="admin", password="password123"
     )
 
 @app.post("/users/register")
