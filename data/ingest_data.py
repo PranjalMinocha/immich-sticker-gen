@@ -9,8 +9,7 @@ S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://localhost:9000")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "admin")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "password123")
 
-RAW_BUCKET = "raw-sa1b-bucket"
-TRANSFORMED_BUCKET = "transformed-ml-bucket"
+RAW_BUCKET = "objstore-proj28"
 
 s3 = boto3.client(
     's3',
