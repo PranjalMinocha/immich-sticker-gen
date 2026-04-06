@@ -222,12 +222,17 @@ def init_rocm_smi_for_gpu_util_logging() -> bool:
 
 def sample_gpu_utilization_percent(device: torch.device) -> Optional[float]:
     """
-    GFX utilization (0–100) for the training GPU (pyrsmi or rocm-smi CLI).
+    GFX utilization (0-100) for the training GPU (pyrsmi or rocm-smi CLI).
     Call after torch.cuda.synchronize() for a meaningful sample.
     """
     if device.type != "cuda":
         return None
     idx = device.index if device.index is not None else 0
+    return sample_gpu_utilization_by_idx(idx)
+
+
+def sample_gpu_utilization_by_idx(idx: int) -> Optional[float]:
+    """GFX utilization (0-100) for a specific GPU index."""
     if _gpu_util_backend == "rocm_smi_cli":
         return _sample_gpu_util_rocm_smi_cli(idx)
     if not _rocm_smi_initialized:
@@ -241,6 +246,19 @@ def sample_gpu_utilization_percent(device: torch.device) -> Optional[float]:
         return float(u)
     except Exception:
         return None
+
+
+def sample_all_gpu_utilization() -> Dict[int, float]:
+    """Sample utilization for all available GPUs. Returns dict of {gpu_idx: utilization}."""
+    result = {}
+    if not torch.cuda.is_available():
+        return result
+    num_gpus = torch.cuda.device_count()
+    for idx in range(num_gpus):
+        util = sample_gpu_utilization_by_idx(idx)
+        if util is not None:
+            result[idx] = util
+    return result
 
 
 def sample_gpu_memory_utilization_percent(device: torch.device) -> Optional[float]:

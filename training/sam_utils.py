@@ -47,10 +47,12 @@ def forward_sam_trainable(
     boxes (1,4) optional, point_coords/point_labels optional,
     low_res_mask_gt (1,256,256) float in [0,1] for loss (optional for inference).
     """
+    sam_core = sam.module if hasattr(sam, "module") else sam
+
     input_images = torch.stack(
-        [sam.preprocess(x["image"].to(device)) for x in batched_input], dim=0
+        [sam_core.preprocess(x["image"].to(device)) for x in batched_input], dim=0
     )
-    image_embeddings = sam.image_encoder(input_images)
+    image_embeddings = sam_core.image_encoder(input_images)
     low_res_list: List[torch.Tensor] = []
     raw_outputs: List[Dict[str, torch.Tensor]] = []
 
@@ -64,14 +66,14 @@ def forward_sam_trainable(
         bx = image_record.get("boxes", None)
         if bx is not None:
             bx = bx.to(device)
-        sparse_embeddings, dense_embeddings = sam.prompt_encoder(
+        sparse_embeddings, dense_embeddings = sam_core.prompt_encoder(
             points=points,
             boxes=bx,
             masks=image_record.get("mask_inputs", None),
         )
-        low_res_masks, iou_predictions = sam.mask_decoder(
+        low_res_masks, iou_predictions = sam_core.mask_decoder(
             image_embeddings=curr_embedding.unsqueeze(0),
-            image_pe=sam.prompt_encoder.get_dense_pe(),
+            image_pe=sam_core.prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embeddings,
             dense_prompt_embeddings=dense_embeddings,
             multimask_output=multimask_output,

@@ -56,6 +56,7 @@ from training_core import (
     gpu_env_info,
     gpu_util_logging_status,
     init_rocm_smi_for_gpu_util_logging,
+    sample_all_gpu_utilization,
     sample_gpu_memory_utilization_percent,
     sample_gpu_utilization_percent,
     torch_cuda_memory_mib,
@@ -446,28 +447,29 @@ def train_sam_epochs(
 
             if torch.cuda.is_available():
                 torch.cuda.synchronize(device)
-            util_gpu = sample_gpu_utilization_percent(device)
+            
+            gpu_utils = sample_all_gpu_utilization()
             util_mem = sample_gpu_memory_utilization_percent(device)
             mem_alloc, mem_res = torch_cuda_memory_mib(device)
-            if util_gpu is not None:
-                epoch_gpu_util_sum += util_gpu
+            
+            for gpu_idx, util in gpu_utils.items():
+                mlflow.log_metric(f"system/gpu_{gpu_idx}_utilization_percent", util, step=global_step)
+                epoch_gpu_util_sum += util
                 epoch_gpu_util_count += 1
 
             if batch_idx == 0 or (batch_idx + 1) % log_iv == 0:
                 mlflow.log_metric("sam_train_loss_batch", loss_reduced.item(), step=global_step)
-                if util_gpu is not None:
-                    mlflow.log_metric("gpu_utilization_percent", util_gpu, step=global_step)
                 if util_mem is not None:
                     mlflow.log_metric(
-                        "gpu_memory_utilization_percent", util_mem, step=global_step
+                        "system/gpu_memory_utilization_percent", util_mem, step=global_step
                     )
                 if mem_alloc is not None:
                     mlflow.log_metric(
-                        "gpu_torch_memory_allocated_mib", mem_alloc, step=global_step
+                        "system/gpu_torch_memory_allocated_mib", mem_alloc, step=global_step
                     )
                 if mem_res is not None:
                     mlflow.log_metric(
-                        "gpu_torch_memory_reserved_mib", mem_res, step=global_step
+                        "system/gpu_torch_memory_reserved_mib", mem_res, step=global_step
                     )
 
             if show_tqdm:
@@ -482,7 +484,7 @@ def train_sam_epochs(
         mlflow.log_metric("sam_epoch_time_sec", epoch_time, step=ep)
         if epoch_gpu_util_count > 0:
             mlflow.log_metric(
-                "gpu_utilization_epoch_mean",
+                "system/gpu_utilization_percent_mean",
                 epoch_gpu_util_sum / epoch_gpu_util_count,
                 step=ep,
             )
@@ -515,8 +517,9 @@ def run_encoder_distill(
     cfg: dict,
     cfg_path: Path,
     mobilesam_root: Path,
-    device: torch.device,
+    num_gpus: int,
 ) -> None:
+    device = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
     data_cfg = cfg["data"]
     train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
     out_cfg = cfg.get("output", {})
@@ -605,6 +608,9 @@ def run_encoder_distill(
     )
 
     model = model.to(device)
+    if num_gpus > 1:
+        model = nn.DataParallel(model, device_ids=list(range(num_gpus)))
+        print(f"Using {num_gpus} GPUs for encoder distillation", file=sys.stderr)
 
     opt_name = train_cfg.get("optimizer", "sgd").lower()
     lr = float(train_cfg.get("learning_rate", 0.05))
@@ -631,7 +637,7 @@ def run_encoder_distill(
     sha = git_sha(_repo_root())
     flat_params: Dict[str, str] = {}
     cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
-    flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": "1"}, flat_params)
+    flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": str(num_gpus)}, flat_params)
 
     t_wall_start = time.perf_counter()
     peak_mem = 0
@@ -711,18 +717,18 @@ def run_encoder_distill(
                         step=step,
                     )
                     if util_gpu is not None:
-                        mlflow.log_metric("gpu_utilization_percent", util_gpu, step=step)
+                        mlflow.log_metric("system/gpu_utilization_percent", util_gpu, step=step)
                     if util_mem is not None:
                         mlflow.log_metric(
-                            "gpu_memory_utilization_percent", util_mem, step=step
+                            "system/gpu_memory_utilization_percent", util_mem, step=step
                         )
                     if mem_alloc is not None:
                         mlflow.log_metric(
-                            "gpu_torch_memory_allocated_mib", mem_alloc, step=step
+                            "system/gpu_torch_memory_allocated_mib", mem_alloc, step=step
                         )
                     if mem_res is not None:
                         mlflow.log_metric(
-                            "gpu_torch_memory_reserved_mib", mem_res, step=step
+                            "system/gpu_torch_memory_reserved_mib", mem_res, step=step
                         )
                 if show_tqdm:
                     batch_bar.set_postfix(loss=f"{loss_reduced.item():.4f}")
@@ -736,7 +742,7 @@ def run_encoder_distill(
             mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=epoch)
             if epoch_gpu_util_count > 0:
                 mlflow.log_metric(
-                    "gpu_utilization_epoch_mean",
+                    "system/gpu_utilization_percent_mean",
                     epoch_gpu_util_sum / epoch_gpu_util_count,
                     step=epoch,
                 )
@@ -817,8 +823,9 @@ def run_full_sam(
     cfg: dict,
     cfg_path: Path,
     mobilesam_root: Path,
-    device: torch.device,
+    num_gpus: int,
 ) -> None:
+    device = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
     data_cfg = cfg["data"]
     train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
     if not data_cfg.get("annotation_root"):
@@ -855,6 +862,16 @@ def run_full_sam(
     test_ds = SA1BSamDataset(
         jpg_splits["test"], data_cfg, img_size=img_sz, progress_label="test", split="test"
     )
+
+    sam_inst_frac = data_cfg.get("sam_instance_frac")
+    if sam_inst_frac is not None and 0 < sam_inst_frac <= 1.0:
+        n_train = max(1, int(len(train_ds) * sam_inst_frac))
+        n_val = max(1, int(len(val_ds) * sam_inst_frac))
+        n_test = max(1, int(len(test_ds) * sam_inst_frac))
+        train_ds = torch.utils.data.Subset(train_ds, list(range(n_train)))
+        val_ds = torch.utils.data.Subset(val_ds, list(range(n_val)))
+        test_ds = torch.utils.data.Subset(test_ds, list(range(n_test)))
+        print(f"Using {sam_inst_frac*100:.1f}% of data: train={n_train}, val={n_val}, test={n_test}", file=sys.stderr)
     sam_train = DataLoader(
         train_ds,
         batch_size=batch_size,
@@ -884,6 +901,9 @@ def run_full_sam(
     sam_ckpt_resolved = resolve_pretrained_checkpoint(cfg)
 
     sam = build_sam_tiny(mobilesam_root, sam_ckpt_resolved, device)
+    if num_gpus > 1:
+        sam = nn.DataParallel(sam, device_ids=list(range(num_gpus)))
+        print(f"Using {num_gpus} GPUs for full SAM training", file=sys.stderr)
 
     opt_name = train_cfg.get("optimizer", "adamw").lower()
     lr = float(train_cfg.get("learning_rate", 1e-4))
@@ -903,7 +923,7 @@ def run_full_sam(
     sha = git_sha(_repo_root())
     flat_params: Dict[str, str] = {}
     cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
-    flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": "1"}, flat_params)
+    flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": str(num_gpus)}, flat_params)
     multimask = bool(cfg.get("sam", {}).get("multimask_output", False))
     epochs = int(train_cfg.get("epochs", 8))
 
@@ -961,13 +981,11 @@ def run_full_sam(
 
 
 def main() -> None:
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        raise RuntimeError(
-            "Multi-GPU is not supported. Run: python3 train.py --config <yaml> "
-            "(do not use torchrun --nproc_per_node > 1)."
-        )
-    parser = argparse.ArgumentParser(description="Unified MobileSAM / TinyViT training (single GPU)")
+    mlflow.enable_system_metrics_logging()
+    
+    parser = argparse.ArgumentParser(description="Unified MobileSAM / TinyViT training")
     parser.add_argument("--config", type=str, required=True)
+    args = parser.parse_args()
     args = parser.parse_args()
     cfg_path = Path(args.config).resolve()
     with open(cfg_path, encoding="utf-8") as f:
@@ -977,16 +995,12 @@ def main() -> None:
     mode = train_top.get("mode", "encoder_distill")
 
     mobilesam_root = _resolve_mobilesam_root(cfg)
-    if torch.cuda.is_available():
-        torch.cuda.set_device(0)
-        device = torch.device("cuda:0")
-    else:
-        device = torch.device("cpu")
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
     if mode == "encoder_distill":
-        run_encoder_distill(cfg, cfg_path, mobilesam_root, device)
+        run_encoder_distill(cfg, cfg_path, mobilesam_root, num_gpus)
     elif mode == "full_sam":
-        run_full_sam(cfg, cfg_path, mobilesam_root, device)
+        run_full_sam(cfg, cfg_path, mobilesam_root, num_gpus)
     else:
         raise ValueError(f"Unknown training.mode: {mode}")
 

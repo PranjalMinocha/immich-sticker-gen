@@ -14,3 +14,6 @@ mlruns/
 
 # One-off host script to precompute SAM instance index (not shipped in repo)
 training/prebuild_sam_instance_index.py
+
+# Agent context file
+AGENTS.md

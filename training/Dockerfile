@@ -18,7 +18,8 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
