@@ -19,7 +19,7 @@ services:
     volumes:
       - ./dataset_storage:/app/data
     command: >
-      split_dataset.py 
+      split_data.py 
       --source /app/data/extracted_sa1b_data 
       --output /app/data/ml_dataset_split 
       --seed 42
