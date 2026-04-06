@@ -82,7 +82,7 @@ def generate_initial_sticker(upload_id: int = Form(...), bbox: str = Form(...), 
     cur.execute(
         """
         INSERT INTO sticker_generations 
-        (upload_id, bbox, point_coords, ml_suggested_mask, processing_time_ms, saved, num_tries, edited_pixels) 
+        (image_id, bbox, point_coords, ml_suggested_mask, processing_time_ms, saved, num_tries, edited_pixels) 
         VALUES (%s, %s, %s, %s, %s, NULL, 1, 0) RETURNING generation_id;
         """,
         (upload_id, bbox, point_coords, mock_rle_mask, int(processing_time * 1000))

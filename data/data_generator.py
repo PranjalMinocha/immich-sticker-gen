@@ -115,7 +115,7 @@ def process_file_pair(jpg_path, json_path):
             # PHASE 1: Initial Generation
             print(f"  -> [{username}] Requesting initial sticker...")
             gen_res = requests.post(f"{API_BASE_URL}/sticker/generate", data={
-                "upload_id": upload_id,
+                "image_id": upload_id,
                 "bbox": json.dumps(noisy_bbox),
                 "point_coords": json.dumps(point_coords)
             })
