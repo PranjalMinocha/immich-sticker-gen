@@ -7,8 +7,8 @@ from pyspark.sql.functions import col, row_number
 
 # --- Configuration ---
 POSTGRES_URI = os.environ.get("POSTGRES_URI")
-DB_USER = os.environ.get("DB_USER")
-DB_PASS = os.environ.get("DB_PASS")
+POSTGRES_USER = os.environ.get("DB_USER")
+POSTGRES_PASSWORD = os.environ.get("DB_PASS")
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY")
@@ -65,8 +65,8 @@ def compile_training_batch():
         .option("url", POSTGRES_URI) \
         .option("driver", "org.postgresql.Driver") \
         .option("dbtable", query) \
-        .option("user", DB_USER) \
-        .option("password", DB_PASS) \
+        .option("user", POSTGRES_USER) \
+        .option("password", POSTGRES_PASSWORD) \
         .load()
 
     # --- 3. Transform: Apply Complex Selection Logic ---
@@ -108,7 +108,7 @@ def compile_training_batch():
     # Extract the IDs that were just selected to update the source database
     selected_ids = [row.generation_id for row in df_final_batch.select("generation_id").collect()]
     
-    conn = psycopg2.connect(host="postgres", database="sticker_metrics", user=DB_USER, password=DB_PASS)
+    conn = psycopg2.connect(host="postgres", database="sticker_gen", user=POSTGRES_USER, password=POSTGRES_PASSWORD)
     cur = conn.cursor()
     
     # Efficiently update all selected rows in one transaction
