@@ -16,6 +16,7 @@ see README and run params `gpu_util_backend` / `gpu_util_init_detail`.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import time
 from itertools import islice
@@ -79,24 +80,40 @@ def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
     return None
 
 
-def _sam_eval_max_batches(train_cfg: dict) -> Optional[int]:
-    """
-    Cap SAM mask IoU eval (val each epoch, test at end). Instance counts can be 200k+;
-    without a cap, eval looks hung for hours.
+# When ``train.sam_instance_frac`` is unset, SAM IoU / val-SAM eval uses this many batches max.
+_DEFAULT_SAM_INSTANCE_EVAL_BATCHES = 500
 
-    - Key **absent**: default ``500`` batches.
-    - **null** / **0** / negative: no cap (full loader).
-    - Positive int: that many batches.
+
+def resolve_eval_max_batches(train_cfg: dict, loader: DataLoader) -> Optional[int]:
     """
-    if "sam_eval_max_batches" not in train_cfg:
-        return 500
-    raw = train_cfg["sam_eval_max_batches"]
-    if raw is None:
-        return None
-    v = int(raw)
-    if v <= 0:
-        return None
-    return v
+    Batch cap for SAM IoU eval (``full_sam`` val/test, ``encoder_distill`` merged test).
+
+    - ``train.sam_instance_frac``: fraction in ``(0, 1]`` of ``len(loader)`` batches,
+      ``max(1, ceil(frac * n_batches))``. Use ``1.0`` for the full loader.
+    - If **unset**, default ``_DEFAULT_SAM_INSTANCE_EVAL_BATCHES`` batches (same as previous
+      implicit cap).
+    """
+    frac_raw = train_cfg.get("sam_instance_frac")
+    if frac_raw is not None:
+        frac = float(frac_raw)
+        if not (0.0 < frac <= 1.0):
+            raise ValueError("train.sam_instance_frac must be in (0, 1].")
+        n_batches = len(loader)
+        if n_batches <= 0:
+            return None
+        return max(1, int(math.ceil(frac * n_batches)))
+    return _DEFAULT_SAM_INSTANCE_EVAL_BATCHES
+
+
+def _log_mlflow_eval_batch_cap(train_cfg: dict) -> None:
+    frac_raw = train_cfg.get("sam_instance_frac")
+    if frac_raw is not None:
+        mlflow.log_param("sam_instance_frac", str(frac_raw))
+    else:
+        mlflow.log_param(
+            "sam_instance_frac",
+            f"unset_default_{_DEFAULT_SAM_INSTANCE_EVAL_BATCHES}_batches",
+        )
 
 
 def _mlflow_log_gpu_metric_init() -> None:
@@ -143,9 +160,8 @@ def eval_sam_loader_mean_iou(
     """
     Mean low-res mask IoU over a DataLoader. Per-instance batches (list collate).
 
-    ``max_batches`` caps how many batches to run (default: all). Full SA-1B-style
-    test splits can be 200k+ instances — without a cap this step can take many hours
-    with no visible progress.
+    ``max_batches`` caps how many batches to run; ``None`` means the full loader.
+    Call sites use ``resolve_eval_max_batches`` (``train.sam_instance_frac`` or default 500).
     """
     sam.eval()
     tot = 0.0
@@ -362,7 +378,11 @@ def train_sam_epochs(
 ) -> None:
     show_tqdm = train_cfg.get("show_progress", True)
     log_iv = int(train_cfg.get("log_interval_batches", 50))
-    sam_eval_mb = _sam_eval_max_batches(train_cfg)
+    sam_eval_mb = (
+        resolve_eval_max_batches(train_cfg, val_loader)
+        if val_loader is not None
+        else None
+    )
     global_step = epoch_offset * max(len(train_loader), 1)
 
     for epoch in range(1, epochs + 1):
@@ -474,7 +494,7 @@ def run_encoder_distill(
     manifest_in = data_cfg.get("split_manifest")
     manifest_path = Path(manifest_in).resolve() if manifest_in else None
 
-    _, train_ds, val_ds, test_ds, split_meta, jpg_splits = build_datasets(
+    _, train_ds, val_ds, _, split_meta, jpg_splits = build_datasets(
         data_cfg=data_cfg,
         img_size=int(data_cfg.get("image_size", 1024)),
         seed=int(data_cfg.get("seed", 42)),
@@ -499,13 +519,6 @@ def run_encoder_distill(
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=max(batch_size, 1),
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin,
-    )
-    test_loader = DataLoader(
-        test_ds,
         batch_size=max(batch_size, 1),
         shuffle=False,
         num_workers=num_workers,
@@ -608,14 +621,7 @@ def run_encoder_distill(
             mlflow.log_param(f"split_count_{sk}", sv)
     for k, v in gpu_env_info().items():
         mlflow.log_param(f"env_{k}", v)
-    smb = _sam_eval_max_batches(train_cfg)
-    if "sam_eval_max_batches" in train_cfg:
-        mlflow.log_param(
-            "sam_eval_max_batches",
-            "full" if smb is None else str(smb),
-        )
-    else:
-        mlflow.log_param("sam_eval_max_batches", f"default({smb})")
+    _log_mlflow_eval_batch_cap(train_cfg)
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
@@ -726,18 +732,8 @@ def run_encoder_distill(
                     output_dir,
                 )
 
-        test_metrics = evaluate_encoder(
-            model,
-            test_loader,
-            device,
-            desc="Test (held-out)",
-            show_progress=show_tqdm,
-        )
-
         total_time = time.perf_counter() - t_wall_start
 
-        mlflow.log_metric("test_embedding_loss", test_metrics["loss"])
-        mlflow.log_metric("test_cosine_similarity", test_metrics["cosine_similarity"])
         mlflow.log_metric("total_train_time_sec", total_time)
         mlflow.log_metric("peak_cuda_memory_bytes", float(peak_mem))
         mlflow.log_metric("epochs_completed", float(epochs))
@@ -765,7 +761,7 @@ def run_encoder_distill(
                     sam_test,
                     device,
                     multimask,
-                    max_batches=smb,
+                    max_batches=resolve_eval_max_batches(train_cfg, sam_test),
                     show_progress=show_tqdm,
                     desc="SAM test IoU (merged encoder)",
                 )
@@ -892,14 +888,7 @@ def run_full_sam(
             mlflow.log_param(f"split_count_{sk}", sv)
     for k, v in gpu_env_info().items():
         mlflow.log_param(f"env_{k}", v)
-    smb_full = _sam_eval_max_batches(train_cfg)
-    if "sam_eval_max_batches" in train_cfg:
-        mlflow.log_param(
-            "sam_eval_max_batches",
-            "full" if smb_full is None else str(smb_full),
-        )
-    else:
-        mlflow.log_param("sam_eval_max_batches", f"default({smb_full})")
+    _log_mlflow_eval_batch_cap(train_cfg)
     if split_out.is_file():
         mlflow.log_artifact(str(split_out), artifact_path="split")
 
@@ -925,7 +914,7 @@ def run_full_sam(
                 sam_test,
                 device,
                 multimask,
-                max_batches=smb_full,
+                max_batches=resolve_eval_max_batches(train_cfg, sam_test),
                 show_progress=train_cfg.get("show_progress", True),
                 desc="SAM test IoU",
             )

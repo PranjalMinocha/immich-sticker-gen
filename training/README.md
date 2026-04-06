@@ -49,7 +49,9 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 Training is **single-GPU only** (`python3 train.py`). Do not use **`torchrun --nproc_per_node` > 1**.
 
-**Large instance counts:** with **`annotation_root`**, SAM IoU evaluation (merged encoder at end of **`encoder_distill`**, or val/test in **`full_sam`**) iterates the dataloader. Full test splits can be **200k+ instances** and appear hung. **`train.sam_eval_max_batches`** caps batches (default **500** if the key is omitted); set to **`null`** for a full run. A tqdm bar shows progress during SAM IoU eval.
+**Large instance counts:** with **`annotation_root`**, SAM IoU evaluation (merged encoder at end of **`encoder_distill`**, or val each epoch / test at end in **`full_sam`**) iterates dataloaders. Full splits can be **200k+ instances** and appear hung. Cap eval with **`train.sam_instance_frac`**: a fraction in **`(0, 1]`** of that loader’s batch count (`ceil(frac * len(loader))`, at least **1** batch). Use **`1.0`** for a full pass. If **`sam_instance_frac`** is **omitted**, eval uses **500** batches by default. A tqdm bar shows progress.
+
+**Encoder distillation:** held-out **test** is evaluated only via **SAM mask IoU** on the merged model when **`annotation_root`** is set (no separate final **test** embedding loss / cosine on the distill objective).
 
 ---
 

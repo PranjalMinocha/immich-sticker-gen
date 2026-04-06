@@ -282,13 +282,14 @@ def evaluate_encoder(
     desc: str = "Eval",
     show_progress: bool = False,
 ) -> Dict[str, float]:
-    """Encoder eval on one process."""
+    """Encoder eval on one process (full loader)."""
     m = _unwrap(model)
     m.eval()
     total_loss = 0.0
     total_cos = 0.0
     n_batches = 0
-    it = tqdm(loader, desc=desc, leave=False, disable=not show_progress)
+    total = len(loader) if hasattr(loader, "__len__") else None
+    it = tqdm(loader, desc=desc, leave=False, disable=not show_progress, total=total)
     for imgs, target_feats, _ in it:
         imgs = imgs.to(device, non_blocking=True)
         target_feats = target_feats.to(device, non_blocking=True)
