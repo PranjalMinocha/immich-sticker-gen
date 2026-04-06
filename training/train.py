@@ -123,6 +123,14 @@ def _collect_val_samples(loader: DataLoader, n: int) -> List[Dict[str, Any]]:
     return out
 
 
+def _mask_tensor_to_2d_hw(t: torch.Tensor) -> np.ndarray:
+    """(1,1,H,W), (1,H,W), or (H,W) -> float numpy (H,W)."""
+    a = np.squeeze(t.detach().float().cpu().numpy())
+    if a.ndim != 2:
+        raise ValueError(f"Expected mask with two spatial dims after squeeze, got shape {tuple(t.shape)} -> {a.shape}")
+    return a
+
+
 def _low_res_sam_to_unpadded_hw(
     low_res_hw: np.ndarray,
     unpadded_h: int,
@@ -135,6 +143,9 @@ def _low_res_sam_to_unpadded_hw(
     SAM low-res masks (256²) align to the padded square input to the image encoder (1024²).
     Dataset images are nh×nw in the top-left of that square; map mask to the same layout.
     """
+    low_res_hw = np.squeeze(low_res_hw)
+    if low_res_hw.ndim != 2:
+        raise ValueError(f"Expected 2D low-res mask, got shape {low_res_hw.shape}")
     lr = low_res_hw.shape[0]
     if low_res_hw.shape[1] != lr:
         raise ValueError(f"Expected square low-res mask, got {low_res_hw.shape}")
@@ -195,8 +206,8 @@ def log_sam_val_preview_artifacts(
             }
         ]
         logits, _ = forward_sam_trainable(sam, one, multimask_output, device)
-        pred_lr = torch.sigmoid(logits[0, 0]).float().cpu().numpy()
-        gt_lr = gt_t[0, 0].float().cpu().numpy()
+        pred_lr = _mask_tensor_to_2d_hw(torch.sigmoid(logits[0]))
+        gt_lr = _mask_tensor_to_2d_hw(gt_t)
 
         img = img_t.permute(1, 2, 0).cpu().numpy()
         img_u8 = np.clip(img, 0.0, 255.0).astype(np.uint8)
