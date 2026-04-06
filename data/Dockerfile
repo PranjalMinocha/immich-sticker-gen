@@ -6,14 +6,14 @@ ENV PYTHONUNBUFFERED=1
 
 # Install Java, procps (for 'ps' command), and DB drivers in one go
 RUN apt-get update && apt-get install -y \
-    openjdk-17-jre-headless \
+    openjdk-21-jre-headless \
     procps \
     gcc \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the Java Home path so Spark can find its engine
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+# Set the Java Home path to the Java 21 directory
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 
 # Set the working directory inside the container
 WORKDIR /app
