@@ -1,0 +1,20 @@
+FROM nvcr.io/nvidia/pytorch:24.04-py3
+
+RUN pip install --no-cache-dir \
+    fastapi==0.111.0 \
+    uvicorn[standard]==0.30.1 \
+    numpy==1.26.4 \
+    Pillow==10.3.0 \
+    pydantic==2.7.1 \
+    timm==0.9.16
+
+RUN pip install --no-cache-dir --no-deps \
+    git+https://github.com/ChaoningZhang/MobileSAM.git
+
+# context is the parent dir
+COPY system/fastapi_app/app.py /app/app.py
+
+WORKDIR /app
+EXPOSE 8000
+ENTRYPOINT []
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

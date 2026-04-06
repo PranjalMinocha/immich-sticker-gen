@@ -3,24 +3,30 @@ version: "3.9"
 # ─────────────────────────────────────────────────────────────────────────────
 # Experiment progression:
 #
-#   Stage 1 — FastAPI + ONNX on CPU (baseline)
-#             fastapi_serial, fastapi_concurrent, fastapi_poisson
+#   Stage 0 — FastAPI + PyTorch (GPU)
+#             fastapi_pytorch_serial, fastapi_pytorch_concurrent, fastapi_pytorch_poisson
 #
-#   Stage 2 — Triton GPU, 1 instance, no dynamic batching
+#   Stage 1 — FastAPI + ONNX (GPU)
+#             fastapi_onnx_serial, fastapi_onnx_concurrent, fastapi_onnx_poisson
+#
+#   Stage 2 — Triton, 1 GPU instance
 #             triton_gpu1_serial, triton_gpu1_concurrent, triton_gpu1_poisson
 #
-#   Stage 3 — Triton GPU, 2 instances, no dynamic batching
+#   Stage 3 — Triton, 2 GPU instances
 #             triton_gpu2_concurrent, triton_gpu2_poisson
 #
-#   Stage 4 — Triton GPU, 1 instance + dynamic batching
+#   Stage 4 — Triton, 1 GPU instance + dynamic batching
 #             triton_dynbatch_poisson
 #
 # Run:
 #   docker compose up init
-#   docker compose up fastapi_server triton_server -d
-#   docker compose run --rm fastapi_serial && \
-#   docker compose run --rm fastapi_concurrent && \
-#   docker compose run --rm fastapi_poisson && \
+#   docker compose up fastapi_pytorch_server fastapi_onnx_server triton_server -d
+#   docker compose run --rm fastapi_pytorch_serial && \
+#   docker compose run --rm fastapi_pytorch_concurrent && \
+#   docker compose run --rm fastapi_pytorch_poisson && \
+#   docker compose run --rm fastapi_onnx_serial && \
+#   docker compose run --rm fastapi_onnx_concurrent && \
+#   docker compose run --rm fastapi_onnx_poisson && \
 #   docker compose run --rm triton_gpu1_serial && \
 #   docker compose run --rm triton_gpu1_concurrent && \
 #   docker compose run --rm triton_gpu1_poisson && \
@@ -65,8 +71,28 @@ services:
       DATA_DIR:  /data
       MODEL_DIR: /data
 
-  # ── Stage 1: FastAPI server (CPU) ─────────────────────────────────────────
-  fastapi_server:
+  # ── Stage 0: FastAPI + PyTorch ────────────────────────────────────────────
+  fastapi_pytorch_server:
+    <<: *gpu
+    image: fastapi-pytorch:latest
+    build:
+      context: ..
+      dockerfile: system/fastapi_app/Dockerfile.pytorch
+    entrypoint: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+    volumes:
+      - serving_data:/data
+    environment:
+      MODEL_DIR: /data
+      CKPT_PATH: /data/mobile_sam.pt
+      BACKEND:   pytorch
+    ports:
+      - "8004:8000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ── Stage 1: FastAPI + ONNX ───────────────────────────────────────────────
+  fastapi_onnx_server:
     <<: *gpu
     build:
       context: ..
@@ -82,12 +108,13 @@ services:
       init:
         condition: service_completed_successfully
 
-  # ── Stage 2-4: Triton server (GPU, loads all 3 model variants) ────────────
+  # ── Stage 2-4: Triton server ──────────────────────────────────────────────
   triton_server:
     <<: *gpu
     build:
       context: .
       dockerfile: Dockerfile.triton
+    shm_size: '512m'
     volumes:
       - serving_data:/data
       - ./triton_models:/models
@@ -101,49 +128,75 @@ services:
       init:
         condition: service_completed_successfully
 
-  # ── Stage 1 clients: FastAPI CPU ──────────────────────────────────────────
-  fastapi_serial:
+  # ── Stage 0 clients: FastAPI PyTorch ─────────────────────────────────────
+  fastapi_pytorch_serial:
     <<: *client-base
     environment:
       DATA_DIR:          /data
-      FASTAPI_URL:       http://fastapi_server:8000/predict
+      FASTAPI_URL:       http://fastapi_pytorch_server:8000/predict
       EXPERIMENT:        fastapi_serial
       NUM_SERIAL_TRIALS: "100"
 
-  fastapi_concurrent:
+  fastapi_pytorch_concurrent:
     <<: *client-base
     environment:
       DATA_DIR:        /data
-      FASTAPI_URL:     http://fastapi_server:8000/predict
+      FASTAPI_URL:     http://fastapi_pytorch_server:8000/predict
       EXPERIMENT:      fastapi_concurrent
       NUM_CONCURRENT:  "8"
-      CONCURRENT_REQS: "200"
 
-  fastapi_poisson:
+  fastapi_pytorch_poisson:
     <<: *client-base
     environment:
       DATA_DIR:          /data
-      FASTAPI_URL:       http://fastapi_server:8000/predict
+      FASTAPI_URL:       http://fastapi_pytorch_server:8000/predict
       EXPERIMENT:        fastapi_poisson
       RATE_REQS_PER_SEC: "5.0"
       RATE_DURATION_SEC: "30.0"
 
-  # ── Stage 2 clients: Triton GPU, 1 instance ───────────────────────────────
+  # ── Stage 1 clients: FastAPI ONNX ────────────────────────────────────────
+  fastapi_onnx_serial:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      FASTAPI_URL:       http://fastapi_onnx_server:8000/predict
+      EXPERIMENT:        fastapi_serial
+      NUM_SERIAL_TRIALS: "100"
+
+  fastapi_onnx_concurrent:
+    <<: *client-base
+    environment:
+      DATA_DIR:        /data
+      FASTAPI_URL:     http://fastapi_onnx_server:8000/predict
+      EXPERIMENT:      fastapi_concurrent
+      NUM_CONCURRENT:  "8"
+      CONCURRENT_REQS: "200"
+
+  fastapi_onnx_poisson:
+    <<: *client-base
+    environment:
+      DATA_DIR:          /data
+      FASTAPI_URL:       http://fastapi_onnx_server:8000/predict
+      EXPERIMENT:        fastapi_poisson
+      RATE_REQS_PER_SEC: "5.0"
+      RATE_DURATION_SEC: "30.0"
+
+  # ── Stage 2 clients: Triton, 1 GPU instance ───────────────────────────────
   triton_gpu1_serial:
     <<: *client-base
     environment:
-      DATA_DIR:    /data
-      TRITON_URL:  triton_server:8000
+      DATA_DIR:     /data
+      TRITON_URL:   triton_server:8000
       TRITON_MODEL: mobile_sam_gpu_1
-      EXPERIMENT:  triton_serial
+      EXPERIMENT:   triton_serial
 
   triton_gpu1_concurrent:
     <<: *client-base
     environment:
-      DATA_DIR:      /data
-      TRITON_URL:    triton_server:8000
-      TRITON_MODEL:  mobile_sam_gpu_1
-      EXPERIMENT:    triton_concurrent
+      DATA_DIR:       /data
+      TRITON_URL:     triton_server:8000
+      TRITON_MODEL:   mobile_sam_gpu_1
+      EXPERIMENT:     triton_concurrent
       NUM_CONCURRENT: "8"
 
   triton_gpu1_poisson:
@@ -156,14 +209,14 @@ services:
       RATE_REQS_PER_SEC: "5.0"
       RATE_DURATION_SEC: "30.0"
 
-  # ── Stage 3 clients: Triton GPU, 2 instances ──────────────────────────────
+  # ── Stage 3 clients: Triton, 2 GPU instances ──────────────────────────────
   triton_gpu2_concurrent:
     <<: *client-base
     environment:
-      DATA_DIR:      /data
-      TRITON_URL:    triton_server:8000
-      TRITON_MODEL:  mobile_sam_gpu_2
-      EXPERIMENT:    triton_concurrent
+      DATA_DIR:       /data
+      TRITON_URL:     triton_server:8000
+      TRITON_MODEL:   mobile_sam_gpu_2
+      EXPERIMENT:     triton_concurrent
       NUM_CONCURRENT: "8"
 
   triton_gpu2_poisson:
@@ -176,7 +229,7 @@ services:
       RATE_REQS_PER_SEC: "5.0"
       RATE_DURATION_SEC: "30.0"
 
-  # ── Stage 4 clients: Triton GPU, 1 instance + dynamic batching ────────────
+  # ── Stage 4 clients: Triton, 1 GPU instance + dynamic batching ────────────
   triton_dynbatch_poisson:
     <<: *client-base
     environment:
