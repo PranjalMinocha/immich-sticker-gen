@@ -24,7 +24,7 @@ services:
     env_file: .env
     volumes:
       - ./ingest_data.py:/app/ingest_data.py
-    command: ["python", "ingest_data.py"]
+    command: ["python", "ingest_data.py", "--url", "https://scontent-phl2-1.xx.fbcdn.net/m1/v/t6/An_-m2SWozW4o-FatJEIY1Anj32x8TnUqad9WMAVkMaZHkDyHfjpLcVlQoTFhgQihg8U4R5KqJvoJrtBwT3eKH-Yj5-LfY0.tar?_nc_gid=rRDUkeyKUjg4gpQGZ-ehWw&_nc_oc=Adq0IL4iTYBQN_VARijoyoDC6qb5JpDUz56g3zCvoZO6W5R6nMFZHKGufSQ9imfojX5EYtGbYqJFe9mgFAbJ16-i&ccb=10-5&oh=00_Af0NEoMqKT0Q2wsc77JG_qHmvLvQfGh0Ngbl8MBSQXluTw&oe=69FB997E&_nc_sid=0fdd51"]
     depends_on:
       - postgres
 
