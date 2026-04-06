@@ -18,7 +18,7 @@ RAW_BUCKET = os.environ.get("RAW_BUCKET")
 spark = SparkSession.builder \
     .appName("ML_Training_Data_Compiler") \
     .config("spark.jars.packages", 
-            "org.apache.iceberg:iceberg-spark-runtime-3.3_2.12:1.3.1,"
+            "org.apache.iceberg:iceberg-spark-runtime-3.3_2.12:1.1.0,"
             "org.postgresql:postgresql:42.6.0") \
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
     .config("spark.sql.catalog.lakehouse", "org.apache.iceberg.spark.SparkCatalog") \
