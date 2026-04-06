@@ -16,7 +16,6 @@ RESERVOIR_DIR = "/app/local_reservoir"
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY")
-TRANSFORMED_BUCKET = os.environ.get("TRANSFORMED_BUCKET")
 RAW_BUCKET = os.environ.get("RAW_BUCKET")
 
 s3 = boto3.client(
@@ -31,7 +30,7 @@ def get_image_json_pairs():
     print("Fetching production manifest from Chameleon S3...")
     
     # Get the CSV file from S3
-    csv_obj = s3.get_object(Bucket=TRANSFORMED_BUCKET, Key="dataset_manifests/prod_manifest.csv")
+    csv_obj = s3.get_object(Bucket=RAW_BUCKET, Key="dataset_manifests/prod_manifest.csv")
     csv_text = csv_obj['Body'].read().decode('utf-8')
     
     pairs = []
@@ -39,7 +38,7 @@ def get_image_json_pairs():
     reader = csv.DictReader(StringIO(csv_text))
     for row in reader:
         # row['image_uri'] looks like: s3://transformed_bucket/images_1024/sa_123.jpg
-        img_key = row['image_uri'].split(f"{TRANSFORMED_BUCKET}/")[1]
+        img_key = row['image_uri'].split(f"{RAW_BUCKET}/")[1]
         ann_key = row['annotation_uri'].split(f"{RAW_BUCKET}/")[1]
         pairs.append((img_key, ann_key))
         
