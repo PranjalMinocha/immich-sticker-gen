@@ -50,6 +50,7 @@ def compile_training_batch():
 
     df_candidates = spark.read.format("jdbc") \
         .option("url", POSTGRES_URI) \
+        .option("driver", "org.postgresql.Driver") \
         .option("dbtable", query) \
         .option("user", DB_USER) \
         .option("password", DB_PASS) \
