@@ -6,18 +6,29 @@ from pyspark.sql.window import Window
 from pyspark.sql.functions import col, row_number
 
 # --- Configuration ---
-POSTGRES_URI = "jdbc:postgresql://postgres:5432/sticker_metrics"
-DB_USER = "admin"
-DB_PASS = "password123"
+POSTGRES_URI = os.environ.get("POSTGRES_URI")
+DB_USER = os.environ.get("DB_USER")
+DB_PASS = os.environ.get("DB_PASS")
+S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
+S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY")
+S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY")
+RAW_BUCKET = os.environ.get("RAW_BUCKET")
 
 # --- 1. Initialize PySpark with Apache Iceberg ---
 spark = SparkSession.builder \
     .appName("ML_Training_Data_Compiler") \
-    .config("spark.jars.packages", "org.apache.iceberg:iceberg-spark-runtime-3.3_2.12:1.3.1") \
+    .config("spark.jars.packages", 
+            "org.apache.iceberg:iceberg-spark-runtime-3.3_2.12:1.3.1,"
+            "org.postgresql:postgresql:42.6.0") \
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
     .config("spark.sql.catalog.lakehouse", "org.apache.iceberg.spark.SparkCatalog") \
     .config("spark.sql.catalog.lakehouse.type", "hadoop") \
-    .config("spark.sql.catalog.lakehouse.warehouse", "s3a://immich-raw-data/iceberg_warehouse") \
+    .config("spark.sql.catalog.lakehouse.warehouse", f"s3a://{RAW_BUCKET}/iceberg_warehouse") \
+    .config("spark.hadoop.fs.s3a.endpoint", S3_ENDPOINT) \
+    .config("spark.hadoop.fs.s3a.access.key", S3_ACCESS_KEY) \
+    .config("spark.hadoop.fs.s3a.secret.key", S3_SECRET_KEY) \
+    .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+    .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
     .getOrCreate()
 
 def compile_training_batch():
