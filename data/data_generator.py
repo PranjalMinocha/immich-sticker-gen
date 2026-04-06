@@ -96,7 +96,7 @@ def process_file_pair(jpg_path, json_path):
     files = {'file': (filename, img_bytes, "image/jpeg")}
     upload_res = requests.post(f"{API_BASE_URL}/upload", data={'user_id': user_id}, files=files)
     
-    upload_id = upload_res.json()["upload_id"]
+    image_id = upload_res.json()["image_id"]
     
     ann_obj = s3.get_object(Bucket=RAW_BUCKET, Key=json_path)
     data = json.loads(ann_obj['Body'].read().decode('utf-8'))
@@ -115,7 +115,7 @@ def process_file_pair(jpg_path, json_path):
             # PHASE 1: Initial Generation
             print(f"  -> [{username}] Requesting initial sticker...")
             gen_res = requests.post(f"{API_BASE_URL}/sticker/generate", data={
-                "image_id": upload_id,
+                "image_id": image_id,
                 "bbox": json.dumps(noisy_bbox),
                 "point_coords": json.dumps(point_coords)
             })

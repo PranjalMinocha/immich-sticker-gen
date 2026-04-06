@@ -7,7 +7,7 @@ CREATE TABLE users (
 );
 
 CREATE TABLE image_uploads (
-    upload_id SERIAL PRIMARY KEY,
+    image_id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(user_id),
     s3_object_key VARCHAR(255), -- Track where the API saved it in S3/MinIO
     original_filename VARCHAR(255),
@@ -18,7 +18,7 @@ CREATE TABLE image_uploads (
 CREATE TABLE sticker_generations (
     generation_id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(user_id),
-    image_id INTEGER REFERENCES image_uploads(upload_id),
+    image_id INTEGER REFERENCES image_uploads(image_id),
     bbox JSONB,
     point_coords JSONB,
     ml_suggested_mask TEXT,
