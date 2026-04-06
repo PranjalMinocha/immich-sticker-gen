@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir \
 
 # Copy both data engineering scripts into the container
 COPY ingest_data.py /app/ingest_data.py
-COPY split_dataset.py /app/split_data.py
+COPY split_data.py /app/split_data.py
 
 # Set the entrypoint to python so we can pass the script name as an argument
 ENTRYPOINT ["python"]
