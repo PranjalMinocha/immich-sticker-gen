@@ -106,22 +106,28 @@ def compile_training_batch():
 
     # --- 5. State Update: Mark as Used in Postgres ---
     # Extract the IDs that were just selected to update the source database
-    selected_ids = [row.generation_id for row in df_final_batch.select("generation_id").collect()]
-    
-    conn = psycopg2.connect(host="postgres", database="sticker_gen", user=POSTGRES_USER, password=POSTGRES_PASSWORD)
-    cur = conn.cursor()
-    
-    # Efficiently update all selected rows in one transaction
-    execute_values(
-        cur,
-        "UPDATE sticker_generations SET used_for_training = TRUE WHERE generation_id IN %s",
-        [(id,) for id in selected_ids]
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    print(f"Pipeline complete. Successfully versioned {batch_count} rows in Iceberg.")
+    processed_ids = [row.generation_id for row in df.collect()]
+
+    if processed_ids:
+        # 1. Open the connection
+        conn = psycopg2.connect(
+            host="postgres", database="sticker_gen", user=POSTGRES_USER, password=POSTGRES_PASSWORD
+        )
+        cur = conn.cursor()
+        
+        # 2. Update the records
+        # By passing tuple(processed_ids), psycopg2 safely formats it as: IN (10, 12, 13)
+        cur.execute(
+            "UPDATE sticker_generations SET used_for_training = TRUE WHERE generation_id IN %s",
+            (tuple(processed_ids),) 
+        )
+        
+        # 3. Commit and close
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        print(f"Successfully marked {len(processed_ids)} records as 'used_for_training' in Postgres.")
 
 if __name__ == "__main__":
     compile_training_batch()
