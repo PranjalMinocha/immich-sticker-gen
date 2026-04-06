@@ -47,7 +47,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 
 **`encoder_distill` merged-SAM previews:** with **`data.annotation_root`** and **`train.val_preview_samples` > 0**, after val metrics the run merges TinyViT into the SAM scaffold and logs **`val_previews_merged_sam/epoch_XXXX/`**.
 
-Training is **single-GPU only** (`python3 train.py`). Do not use **`torchrun --nproc_per_node` > 1**.
+Training uses **Ray Train** for distributed multi-GPU training. Use `--num-workers N` to specify the number of GPUs.
 
 **Large instance counts:** with **`annotation_root`**, SAM IoU evaluation (merged encoder at end of **`encoder_distill`**, or val each epoch / test at end in **`full_sam`**) iterates dataloaders. Full splits can be **200k+ instances** and appear hung. Cap eval with **`train.sam_instance_frac`**: a fraction in **`(0, 1]`** of that loader’s batch count (`ceil(frac * len(loader))`, at least **1** batch). Use **`1.0`** for a full pass. If **`sam_instance_frac`** is **omitted**, eval uses **500** batches by default. A tqdm bar shows progress. (**Legacy:** if you put **`sam_instance_frac` under `data`**, training copies it into the effective train config and prints a stderr hint—prefer **`train.sam_instance_frac`**.)
 
@@ -193,8 +193,8 @@ Example run: mount **staged local data** (same tree `setup_host.sh` created unde
 
 ```bash
 DATA_ROOT="${LOCAL_DATA_ROOT:-$HOME/training-data}"
-docker run --rm -it \
-  --shm-size=8g \
+docker run --rm \
+  --shm-size=10.24gb \
   --device=/dev/kfd --device=/dev/dri --group-add video \
   -v "$DATA_ROOT:/data:ro" \
   -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
@@ -202,10 +202,12 @@ docker run --rm -it \
   -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
   -e MOBILESAM_ROOT=/mobilesam \
   immich-sticker-train:rocm \
-  python3 train.py --config /out/run.yaml
+  python3 train.py --config /out/run.yaml --num-workers 2
 ```
 
 Copy and edit **`training/configs/chameleon_docker.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.data_dir`** / **`data.embeddings_dir`** to match `/data`.
+
+**Multi-GPU training:** Use `--num-workers N` to train on N GPUs (default: 2). The script uses Ray Train for distributed training.
 
 ---
 

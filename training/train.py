@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-Unified training entry: encoder distillation or full MobileSAM fine-tuning (single GPU only).
-Config key: training.mode = encoder_distill | full_sam
+Ray Train entry point for MobileSAM training.
+Uses TorchTrainer for multi-GPU training on AMD GPUs (ROCm).
 
-Two-stage (distill then segment): run encoder_distill, then full_sam with training.pretrained_checkpoint_path
-set to the first run's mobile_sam_full.pt (MLflow artifact or local path).
-Weight loading: training.use_pretrained + training.pretrained_checkpoint_path only.
-Student TinyViT in encoder_distill is always random-init unless extended elsewhere.
-
-Artifacts: full MobileSAM state dict (mobile_sam_full.pt) logged to MLflow (plus split manifest).
-System metrics (CPU/RAM/disk/GPU) use MLflow's collector (see start_run(log_system_metrics=True)).
-On **AMD ROCm**, model metrics use **pyrsmi** and/or **`rocm-smi`**, plus **torch CUDA memory MiB**;
-see README and run params `gpu_util_backend` / `gpu_util_init_detail`.
+Usage:
+    python ray_train.py --config ~/training_out/run.yaml
 """
 from __future__ import annotations
 
+import os
+os.environ["RAY_DEDUP_LOGS"] = "0"
+os.environ["RAY_LOG_TO_STDERR"] = "0"
+os.environ["GLOG_minloglevel"] = "3"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+import warnings
+warnings.filterwarnings("ignore")
+
 import argparse
 import math
-import os
 import sys
 import time
 from itertools import islice
@@ -32,6 +33,11 @@ import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+import ray
+import ray.train
+from ray.train.torch import TorchTrainer
+from ray.train import ScalingConfig, RunConfig
 
 from dataset_sa1b import (
     SAM_ENCODER_PAD_SIDE,
@@ -65,11 +71,9 @@ from training_core import (
     _resolve_mobilesam_root,
 )
 
+
 def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
-    """
-    training.use_pretrained (default True) and training.pretrained_checkpoint_path.
-    Returns None when use_pretrained is false (random-init SAM scaffold).
-    """
+    """training.use_pretrained and training.pretrained_checkpoint_path."""
     train_top = cfg.get("training") or {}
     use_pt = bool(train_top.get("use_pretrained", True))
     path = train_top.get("pretrained_checkpoint_path")
@@ -82,36 +86,19 @@ def resolve_pretrained_checkpoint(cfg: dict) -> Optional[str]:
     return None
 
 
-# When ``train.sam_instance_frac`` is unset, SAM IoU / val-SAM eval uses this many batches max.
 _DEFAULT_SAM_INSTANCE_EVAL_BATCHES = 500
 
 
 def effective_train_cfg_for_eval(train_cfg: dict, data_cfg: dict) -> dict:
-    """
-    Shallow copy of ``train`` with optional ``sam_instance_frac`` promoted from ``data``
-    (legacy / mistaken YAML placement under ``data.sam_instance_frac``).
-    """
+    """Shallow copy of train with optional sam_instance_frac from data."""
     out = dict(train_cfg)
     if "sam_instance_frac" not in out and data_cfg.get("sam_instance_frac") is not None:
         out["sam_instance_frac"] = data_cfg["sam_instance_frac"]
-        print(
-            "Note: sam_instance_frac was read from data.* — use train.sam_instance_frac in YAML.",
-            file=sys.stderr,
-            flush=True,
-        )
     return out
 
 
 def resolve_eval_max_batches(train_cfg: dict, loader: DataLoader) -> Optional[int]:
-    """
-    Batch cap for SAM IoU eval (``full_sam`` val/test, ``encoder_distill`` merged test).
-
-    - ``train.sam_instance_frac`` (or legacy ``data.sam_instance_frac`` via
-      ``effective_train_cfg_for_eval``): fraction in ``(0, 1]`` of ``len(loader)`` batches,
-      ``max(1, ceil(frac * n_batches))``. Use ``1.0`` for the full loader.
-    - If **unset**, default ``_DEFAULT_SAM_INSTANCE_EVAL_BATCHES`` batches (same as previous
-      implicit cap).
-    """
+    """Batch cap for SAM IoU eval."""
     frac_raw = train_cfg.get("sam_instance_frac")
     if frac_raw is not None:
         frac = float(frac_raw)
@@ -122,21 +109,6 @@ def resolve_eval_max_batches(train_cfg: dict, loader: DataLoader) -> Optional[in
             return None
         return max(1, int(math.ceil(frac * n_batches)))
     return _DEFAULT_SAM_INSTANCE_EVAL_BATCHES
-
-
-def _mlflow_start_run_safe(run_name: Optional[str]) -> None:
-    """Start MLflow run; fall back without system metrics if the server rejects them."""
-    try:
-        mlflow.start_run(run_name=run_name, log_system_metrics=True)
-    except Exception as e:
-        print(
-            f"mlflow.start_run(log_system_metrics=True) failed ({e!r}); retrying without system metrics.",
-            file=sys.stderr,
-            flush=True,
-        )
-        if mlflow.active_run():
-            mlflow.end_run()
-        mlflow.start_run(run_name=run_name, log_system_metrics=False)
 
 
 def _log_mlflow_eval_batch_cap(train_cfg: dict) -> None:
@@ -150,8 +122,8 @@ def _log_mlflow_eval_batch_cap(train_cfg: dict) -> None:
         )
 
 
-def _mlflow_log_gpu_metric_init() -> None:
-    """AMD ROCm: pyrsmi and/or rocm-smi CLI; log backend + failure detail for debugging MLflow gaps."""
+def _log_mlflow_gpu_metric_init() -> None:
+    """AMD ROCm: pyrsmi and/or rocm-smi CLI."""
     init_rocm_smi_for_gpu_util_logging()
     backend, detail = gpu_util_logging_status()
     if backend == "pyrsmi":
@@ -191,12 +163,7 @@ def eval_sam_loader_mean_iou(
     show_progress: bool = True,
     desc: str = "SAM IoU",
 ) -> float:
-    """
-    Mean low-res mask IoU over a DataLoader. Per-instance batches (list collate).
-
-    ``max_batches`` caps how many batches to run; ``None`` means the full loader.
-    Call sites use ``resolve_eval_max_batches`` (``train.sam_instance_frac`` or default 500).
-    """
+    """Mean low-res mask IoU over a DataLoader."""
     sam.eval()
     tot = 0.0
     n = 0
@@ -219,182 +186,8 @@ def eval_sam_loader_mean_iou(
     return tot / max(n, 1)
 
 
-def _collect_val_samples(loader: DataLoader, n: int) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for batch in loader:
-        for b in batch:
-            out.append(b)
-            if len(out) >= n:
-                return out
-    return out
-
-
-def _mask_tensor_to_2d_hw(t: torch.Tensor) -> np.ndarray:
-    """(1,1,H,W), (1,H,W), or (H,W) -> float numpy (H,W)."""
-    a = np.squeeze(t.detach().float().cpu().numpy())
-    if a.ndim != 2:
-        raise ValueError(f"Expected mask with two spatial dims after squeeze, got shape {tuple(t.shape)} -> {a.shape}")
-    return a
-
-
-def _low_res_sam_to_unpadded_hw(
-    low_res_hw: np.ndarray,
-    unpadded_h: int,
-    unpadded_w: int,
-    *,
-    full_side: int = SAM_ENCODER_PAD_SIDE,
-    interpolation: int,
-) -> np.ndarray:
-    """
-    SAM low-res masks (256²) align to the padded square input to the image encoder (1024²).
-    Dataset images are nh×nw in the top-left of that square; map mask to the same layout.
-    """
-    low_res_hw = np.squeeze(low_res_hw)
-    if low_res_hw.ndim != 2:
-        raise ValueError(f"Expected 2D low-res mask, got shape {low_res_hw.shape}")
-    lr = low_res_hw.shape[0]
-    if low_res_hw.shape[1] != lr:
-        raise ValueError(f"Expected square low-res mask, got {low_res_hw.shape}")
-    up = cv2.resize(
-        low_res_hw,
-        (full_side, full_side),
-        interpolation=interpolation,
-    )
-    return up[:unpadded_h, :unpadded_w]
-
-
-@torch.no_grad()
-def log_sam_val_preview_artifacts(
-    sam: nn.Module,
-    val_loader: DataLoader,
-    device: torch.device,
-    epoch: int,
-    multimask_output: bool,
-    num_samples: int,
-    staging_dir: Path,
-    preview_artifact_prefix: str = "val_previews",
-) -> None:
-    """
-    Save validation images with box prompt, predicted mask overlay, and GT contour; log to MLflow.
-    Prompt matches training: COCO bbox on the instance (or tight box on instance mask); see SA1BSamDataset.
-    """
-    if num_samples <= 0:
-        return
-    ar = mlflow.active_run()
-    if ar is None:
-        return
-
-    sam.eval()
-    samples = _collect_val_samples(val_loader, num_samples)
-    if not samples:
-        return
-
-    ep_tag = f"epoch_{epoch:04d}"
-    safe_stem = preview_artifact_prefix.strip("/").replace("/", "_")
-    art_prefix = f"{preview_artifact_prefix}/{ep_tag}"
-    stage = staging_dir / "mlflow_val_previews" / safe_stem / ep_tag
-    stage.mkdir(parents=True, exist_ok=True)
-
-    for i, rec in enumerate(samples[:num_samples]):
-        img_t = rec["image"]
-        box_t = rec["boxes"]
-        gt_t = rec["low_res_mask_gt"]
-        path_str = str(rec.get("path", f"sample_{i}"))
-        stem = Path(path_str).stem
-        ann_idx = rec.get("ann_idx")
-
-        one = [
-            {
-                "image": img_t.to(device, non_blocking=True),
-                "original_size": rec["original_size"],
-                "boxes": box_t.to(device, non_blocking=True),
-                "low_res_mask_gt": gt_t.to(device, non_blocking=True),
-            }
-        ]
-        logits, _ = forward_sam_trainable(sam, one, multimask_output, device)
-        pred_lr = _mask_tensor_to_2d_hw(torch.sigmoid(logits[0]))
-        gt_lr = _mask_tensor_to_2d_hw(gt_t)
-
-        img = img_t.permute(1, 2, 0).cpu().numpy()
-        img_u8 = np.clip(img, 0.0, 255.0).astype(np.uint8)
-        h, w = img_u8.shape[:2]
-
-        pred_up = _low_res_sam_to_unpadded_hw(
-            pred_lr, h, w, interpolation=cv2.INTER_LINEAR
-        )
-        gt_up = _low_res_sam_to_unpadded_hw(
-            gt_lr, h, w, interpolation=cv2.INTER_NEAREST
-        )
-
-        # BGR for cv2 drawing / imwrite
-        vis = cv2.cvtColor(img_u8, cv2.COLOR_RGB2BGR).astype(np.float32)
-        pred_mask = (pred_up > 0.5).astype(np.float32)
-        green = np.zeros_like(vis)
-        green[:, :, 1] = pred_mask * 255.0
-        vis = cv2.addWeighted(vis, 0.62, green, 0.38, 0)
-        vis = np.clip(vis, 0, 255).astype(np.uint8)
-
-        gt_bin = (gt_up > 0.5).astype(np.uint8) * 255
-        cnts, _ = cv2.findContours(gt_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(vis, cnts, -1, (0, 0, 255), thickness=2)
-
-        bx = box_t[0, 0].cpu().numpy()
-        x0, y0, x1, y1 = int(bx[0]), int(bx[1]), int(bx[2]), int(bx[3])
-        cv2.rectangle(vis, (x0, y0), (x1, y1), (0, 180, 255), 2)
-
-        ann_part = f" ann={ann_idx}" if ann_idx is not None else ""
-        caption = f"{stem}{ann_part} | box [{x0},{y0},{x1},{y1}] (xyxy, resized)"
-        cv2.putText(
-            vis,
-            caption[:120],
-            (4, min(24, h - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
-        suffix = f"_a{ann_idx}" if ann_idx is not None else ""
-        out_path = stage / f"sample_{i:02d}_{stem}{suffix}.png"
-        cv2.imwrite(str(out_path), vis)
-        mlflow.log_artifact(str(out_path), artifact_path=art_prefix)
-
-
-@torch.no_grad()
-def log_encoder_merged_sam_val_previews(
-    student: nn.Module,
-    mobilesam_root: Path,
-    base_sam_checkpoint: Optional[str],
-    sam_val_loader: DataLoader,
-    device: torch.device,
-    epoch: int,
-    multimask_output: bool,
-    num_samples: int,
-    staging_dir: Path,
-) -> None:
-    """
-    Merge current TinyViT into a MobileSAM scaffold (pretrained .pt or random init) and log previews.
-    """
-    if num_samples <= 0 or mlflow.active_run() is None:
-        return
-    st = student.state_dict()
-    enc_state = strip_module_prefix(st)
-    sam = build_sam_tiny(mobilesam_root, base_sam_checkpoint, device)
-    merge_tinyvit_encoder_into_sam(sam, enc_state, strict=False)
-    try:
-        log_sam_val_preview_artifacts(
-            sam,
-            sam_val_loader,
-            device,
-            epoch,
-            multimask_output,
-            num_samples,
-            staging_dir,
-            preview_artifact_prefix="val_previews_merged_sam",
-        )
-    finally:
-        del sam
+def _sam_collate(batch: List[Any]) -> List[Any]:
+    return batch
 
 
 def train_sam_epochs(
@@ -409,7 +202,10 @@ def train_sam_epochs(
     multimask_output: bool,
     epoch_offset: int = 0,
     staging_dir: Optional[Path] = None,
+    world_rank: int = 0,
+    log_to_mlflow: bool = True,
 ) -> None:
+    """Train SAM for specified epochs (adapted for Ray multi-worker)."""
     show_tqdm = train_cfg.get("show_progress", True)
     log_iv = int(train_cfg.get("log_interval_batches", 50))
     sam_eval_mb = (
@@ -448,47 +244,51 @@ def train_sam_epochs(
             if torch.cuda.is_available():
                 torch.cuda.synchronize(device)
             
-            gpu_utils = sample_all_gpu_utilization()
-            util_mem = sample_gpu_memory_utilization_percent(device)
-            mem_alloc, mem_res = torch_cuda_memory_mib(device)
-            
-            for gpu_idx, util in gpu_utils.items():
-                mlflow.log_metric(f"system/gpu_{gpu_idx}_utilization_percent", util, step=global_step)
-                epoch_gpu_util_sum += util
-                epoch_gpu_util_count += 1
+            if log_to_mlflow:
+                gpu_utils = sample_all_gpu_utilization()
+                util_mem = sample_gpu_memory_utilization_percent(device)
+                mem_alloc, mem_res = torch_cuda_memory_mib(device)
+                
+                for gpu_idx, util in gpu_utils.items():
+                    mlflow.log_metric(f"system/gpu_{gpu_idx}_utilization_percent", util, step=global_step)
+                    epoch_gpu_util_sum += util
+                    epoch_gpu_util_count += 1
 
-            if batch_idx == 0 or (batch_idx + 1) % log_iv == 0:
-                mlflow.log_metric("sam_train_loss_batch", loss_reduced.item(), step=global_step)
-                if util_mem is not None:
-                    mlflow.log_metric(
-                        "system/gpu_memory_utilization_percent", util_mem, step=global_step
-                    )
-                if mem_alloc is not None:
-                    mlflow.log_metric(
-                        "system/gpu_torch_memory_allocated_mib", mem_alloc, step=global_step
-                    )
-                if mem_res is not None:
-                    mlflow.log_metric(
-                        "system/gpu_torch_memory_reserved_mib", mem_res, step=global_step
-                    )
+                if batch_idx == 0 or (batch_idx + 1) % log_iv == 0:
+                    mlflow.log_metric("sam_train_loss_batch", loss_reduced.item(), step=global_step)
+                    if util_mem is not None:
+                        mlflow.log_metric(
+                            "system/gpu_memory_utilization_percent", util_mem, step=global_step
+                        )
+                    if mem_alloc is not None:
+                        mlflow.log_metric(
+                            "system/gpu_torch_memory_allocated_mib", mem_alloc, step=global_step
+                        )
+                    if mem_res is not None:
+                        mlflow.log_metric(
+                            "system/gpu_torch_memory_reserved_mib", mem_res, step=global_step
+                        )
 
             if show_tqdm:
                 bar.set_postfix(loss=f"{loss_reduced.item():.4f}")
 
         if scheduler is not None:
             scheduler.step()
-            mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=ep)
+            if log_to_mlflow:
+                mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=ep)
 
         epoch_time = time.perf_counter() - t0
-        mlflow.log_metric("sam_train_loss_epoch", epoch_loss / max(nb, 1), step=ep)
-        mlflow.log_metric("sam_epoch_time_sec", epoch_time, step=ep)
-        if epoch_gpu_util_count > 0:
-            mlflow.log_metric(
-                "system/gpu_utilization_percent_mean",
-                epoch_gpu_util_sum / epoch_gpu_util_count,
-                step=ep,
-            )
-        if val_loader is not None:
+        if log_to_mlflow:
+            mlflow.log_metric("sam_train_loss_epoch", epoch_loss / max(nb, 1), step=ep)
+            mlflow.log_metric("sam_epoch_time_sec", epoch_time, step=ep)
+            if epoch_gpu_util_count > 0:
+                mlflow.log_metric(
+                    "system/gpu_utilization_percent_mean",
+                    epoch_gpu_util_sum / epoch_gpu_util_count,
+                    step=ep,
+                )
+        
+        if world_rank == 0 and val_loader is not None and log_to_mlflow:
             viou = eval_sam_loader_mean_iou(
                 sam,
                 val_loader,
@@ -499,337 +299,27 @@ def train_sam_epochs(
                 desc=f"SAM val IoU ep {ep}",
             )
             mlflow.log_metric("val_mean_iou_lowres", viou, step=ep)
-            n_prev = int(train_cfg.get("val_preview_samples", 3))
-            if n_prev > 0 and staging_dir is not None:
-                log_sam_val_preview_artifacts(
-                    sam,
-                    val_loader,
-                    device,
-                    ep,
-                    multimask_output,
-                    n_prev,
-                    staging_dir,
-                    preview_artifact_prefix="val_previews",
-                )
 
 
-def run_encoder_distill(
-    cfg: dict,
-    cfg_path: Path,
-    mobilesam_root: Path,
-    num_gpus: int,
-) -> None:
-    device = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
+def train_fn(config: Dict[str, Any]) -> None:
+    """
+    Training function for Ray TorchTrainer.
+    Each worker runs this function independently.
+    """
+    world_rank = ray.train.get_context().get_world_rank()
+    local_rank = ray.train.get_context().get_local_rank()
+    
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    if world_rank == 0:
+        print(f"Worker {world_rank}/{local_rank}: Using device {device}", file=sys.stderr)
+    
+    cfg = config["cfg"]
+    cfg_path = config["cfg_path"]
+    mobilesam_root = config["mobilesam_root"]
+    log_to_mlflow = config.get("log_to_mlflow", True)
+    
     data_cfg = cfg["data"]
     train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
-    out_cfg = cfg.get("output", {})
-    output_dir = Path(out_cfg.get("dir", "./training_outputs")).expanduser()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    split_out = output_dir / "split_manifest.json"
-    manifest_in = data_cfg.get("split_manifest")
-    manifest_path = Path(manifest_in).resolve() if manifest_in else None
-
-    _, train_ds, val_ds, _, split_meta, jpg_splits = build_datasets(
-        data_cfg=data_cfg,
-        img_size=int(data_cfg.get("image_size", 1024)),
-        seed=int(data_cfg.get("seed", 42)),
-        train_frac=float(data_cfg.get("train_frac", 0.7)),
-        val_frac=float(data_cfg.get("val_frac", 0.1)),
-        test_frac=float(data_cfg.get("test_frac", 0.2)),
-        split_manifest=manifest_path,
-        split_manifest_out=split_out if manifest_path is None else None,
-    )
-
-    batch_size = int(train_cfg.get("batch_size", 8))
-    num_workers = int(data_cfg.get("num_workers", 4))
-
-    pin = torch.cuda.is_available()
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin,
-        drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=max(batch_size, 1),
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin,
-    )
-
-    model_cfg_enc = cfg.get("model", {})
-    encoder_sam_ckpt = resolve_pretrained_checkpoint(cfg)
-
-    n_prev_enc = int(train_cfg.get("val_preview_samples", 3))
-    multimask_enc = bool(cfg.get("sam", {}).get("multimask_output", False))
-    sam_enc_val_loader: Optional[DataLoader] = None
-    if (
-        n_prev_enc > 0
-        and data_cfg.get("annotation_root")
-        and len(jpg_splits["val"]) > 0
-    ):
-        pv_ds = SA1BSamDataset(
-            jpg_splits["val"],
-            data_cfg,
-            img_size=int(data_cfg.get("image_size", 1024)),
-            progress_label="val_preview",
-            split="val",
-        )
-        bs_pv = min(4, max(len(pv_ds), 1))
-        sam_enc_val_loader = DataLoader(
-            pv_ds,
-            batch_size=bs_pv,
-            shuffle=False,
-            num_workers=num_workers,
-            collate_fn=_sam_collate,
-            pin_memory=pin,
-        )
-
-    TinyViT = _import_tiny_vit(mobilesam_root)
-    model = TinyViT(
-        img_size=int(model_cfg_enc.get("img_size", 1024)),
-        in_chans=int(model_cfg_enc.get("in_chans", 3)),
-        num_classes=int(model_cfg_enc.get("num_classes", 1000)),
-        embed_dims=list(model_cfg_enc.get("embed_dims", [64, 128, 160, 320])),
-        depths=list(model_cfg_enc.get("depths", [2, 2, 6, 2])),
-        num_heads=list(model_cfg_enc.get("num_heads", [2, 4, 5, 10])),
-        window_sizes=list(model_cfg_enc.get("window_sizes", [7, 7, 14, 7])),
-        mlp_ratio=float(model_cfg_enc.get("mlp_ratio", 4.0)),
-        drop_rate=float(model_cfg_enc.get("drop_rate", 0.0)),
-        drop_path_rate=float(model_cfg_enc.get("drop_path_rate", 0.0)),
-        use_checkpoint=bool(model_cfg_enc.get("use_checkpoint", False)),
-        mbconv_expand_ratio=float(model_cfg_enc.get("mbconv_expand_ratio", 4.0)),
-        local_conv_size=int(model_cfg_enc.get("local_conv_size", 3)),
-        layer_lr_decay=float(model_cfg_enc.get("layer_lr_decay", 0.8)),
-    )
-
-    model = model.to(device)
-    if num_gpus > 1:
-        model = nn.DataParallel(model, device_ids=list(range(num_gpus)))
-        print(f"Using {num_gpus} GPUs for encoder distillation", file=sys.stderr)
-
-    opt_name = train_cfg.get("optimizer", "sgd").lower()
-    lr = float(train_cfg.get("learning_rate", 0.05))
-    wd = float(train_cfg.get("weight_decay", 5e-4))
-    momentum = float(train_cfg.get("momentum", 0.9))
-    if opt_name == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-    elif opt_name == "adamw":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-    else:
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wd)
-
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(
-        optimizer, gamma=float(train_cfg.get("scheduler_gamma", 0.5))
-    )
-
-    mlflow_cfg = cfg.get("mlflow", {})
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI") or mlflow_cfg.get(
-        "tracking_uri", "http://127.0.0.1:5000"
-    )
-    experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-encoder")
-    run_name = mlflow_cfg.get("run_name")
-
-    sha = git_sha(_repo_root())
-    flat_params: Dict[str, str] = {}
-    cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
-    flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": str(num_gpus)}, flat_params)
-
-    t_wall_start = time.perf_counter()
-    peak_mem = 0
-    epochs = int(train_cfg.get("epochs", 8))
-    log_interval = int(train_cfg.get("log_interval_batches", 50))
-    show_tqdm = train_cfg.get("show_progress", True)
-
-    mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment(experiment_name)
-    try:
-        _mlflow_start_run_safe(run_name)
-        for k, v in flat_params.items():
-            mlflow.log_param(k, v)
-        mlflow.log_param("config_path", str(cfg_path))
-        mlflow.log_param("mobilesam_root", str(mobilesam_root))
-        for k, v in split_meta.items():
-            if k != "counts":
-                mlflow.log_param(f"split_{k}", str(v))
-        if "counts" in split_meta:
-            for sk, sv in split_meta["counts"].items():
-                mlflow.log_param(f"split_count_{sk}", sv)
-        for k, v in gpu_env_info().items():
-            mlflow.log_param(f"env_{k}", v)
-        _log_mlflow_eval_batch_cap(train_cfg)
-        if split_out.is_file():
-            mlflow.log_artifact(str(split_out), artifact_path="split")
-
-        _mlflow_log_gpu_metric_init()
-
-        epoch_bar = tqdm(
-            range(1, epochs + 1),
-            desc="Epochs",
-            disable=not show_tqdm,
-        )
-        for epoch in epoch_bar:
-            model.train()
-            epoch_loss = 0.0
-            epoch_batches = 0
-            epoch_gpu_util_sum = 0.0
-            epoch_gpu_util_count = 0
-            t_epoch = time.perf_counter()
-
-            batch_bar = tqdm(
-                train_loader,
-                desc=f"Train ep {epoch}/{epochs}",
-                leave=False,
-                disable=not show_tqdm,
-            )
-            for batch_idx, (imgs, target_feats, _) in enumerate(batch_bar):
-                imgs = imgs.to(device, non_blocking=True)
-                target_feats = target_feats.to(device, non_blocking=True)
-                optimizer.zero_grad(set_to_none=True)
-                pred = model(imgs)
-                loss = encoder_distill_loss(pred, target_feats)
-                loss.backward()
-                optimizer.step()
-
-                loss_reduced = loss.detach()
-                epoch_loss += loss_reduced.item()
-                epoch_batches += 1
-
-                if torch.cuda.is_available():
-                    peak_mem = max(peak_mem, torch.cuda.max_memory_allocated(device))
-                    torch.cuda.synchronize(device)
-                util_gpu = sample_gpu_utilization_percent(device)
-                util_mem = sample_gpu_memory_utilization_percent(device)
-                mem_alloc, mem_res = torch_cuda_memory_mib(device)
-                if util_gpu is not None:
-                    epoch_gpu_util_sum += util_gpu
-                    epoch_gpu_util_count += 1
-
-                step = (epoch - 1) * len(train_loader) + batch_idx
-                if batch_idx == 0 or (batch_idx + 1) % log_interval == 0:
-                    mlflow.log_metric(
-                        "train_loss_batch",
-                        loss_reduced.item(),
-                        step=step,
-                    )
-                    if util_gpu is not None:
-                        mlflow.log_metric("system/gpu_utilization_percent", util_gpu, step=step)
-                    if util_mem is not None:
-                        mlflow.log_metric(
-                            "system/gpu_memory_utilization_percent", util_mem, step=step
-                        )
-                    if mem_alloc is not None:
-                        mlflow.log_metric(
-                            "system/gpu_torch_memory_allocated_mib", mem_alloc, step=step
-                        )
-                    if mem_res is not None:
-                        mlflow.log_metric(
-                            "system/gpu_torch_memory_reserved_mib", mem_res, step=step
-                        )
-                if show_tqdm:
-                    batch_bar.set_postfix(loss=f"{loss_reduced.item():.4f}")
-
-            scheduler.step()
-            epoch_time = time.perf_counter() - t_epoch
-            train_loss_epoch = epoch_loss / max(epoch_batches, 1)
-
-            mlflow.log_metric("train_loss_epoch", train_loss_epoch, step=epoch)
-            mlflow.log_metric("epoch_time_sec", epoch_time, step=epoch)
-            mlflow.log_metric("learning_rate", scheduler.get_last_lr()[0], step=epoch)
-            if epoch_gpu_util_count > 0:
-                mlflow.log_metric(
-                    "system/gpu_utilization_percent_mean",
-                    epoch_gpu_util_sum / epoch_gpu_util_count,
-                    step=epoch,
-                )
-
-            val_metrics = evaluate_encoder(
-                model,
-                val_loader,
-                device,
-                desc=f"Val ep {epoch}",
-                show_progress=show_tqdm,
-            )
-            mlflow.log_metric("val_embedding_loss", val_metrics["loss"], step=epoch)
-            mlflow.log_metric(
-                "val_cosine_similarity", val_metrics["cosine_similarity"], step=epoch
-            )
-            if sam_enc_val_loader is not None:
-                log_encoder_merged_sam_val_previews(
-                    model,
-                    mobilesam_root,
-                    encoder_sam_ckpt,
-                    sam_enc_val_loader,
-                    device,
-                    epoch,
-                    multimask_enc,
-                    n_prev_enc,
-                    output_dir,
-                )
-
-        total_time = time.perf_counter() - t_wall_start
-
-        mlflow.log_metric("total_train_time_sec", total_time)
-        mlflow.log_metric("peak_cuda_memory_bytes", float(peak_mem))
-        mlflow.log_metric("epochs_completed", float(epochs))
-
-        ckpt_enc = output_dir / "tinyvit_encoder_only.pth"
-        st = model.state_dict()
-        torch.save(strip_module_prefix(st), ckpt_enc)
-
-        sam = build_sam_tiny(mobilesam_root, encoder_sam_ckpt, device)
-        merge_tinyvit_encoder_into_sam(sam, strip_module_prefix(st), strict=False)
-        sam.eval()
-
-        multimask = bool(cfg.get("sam", {}).get("multimask_output", False))
-        if data_cfg.get("annotation_root"):
-            _, _, sam_test = build_sam_loaders(
-                data_cfg,
-                jpg_splits,
-                batch_size=int(train_cfg.get("eval_batch_size", train_cfg.get("batch_size", 8))),
-                num_workers=num_workers,
-                device_is_cuda=torch.cuda.is_available(),
-            )
-            if sam_test is not None:
-                tiou = eval_sam_loader_mean_iou(
-                    sam,
-                    sam_test,
-                    device,
-                    multimask,
-                    max_batches=resolve_eval_max_batches(train_cfg, sam_test),
-                    show_progress=show_tqdm,
-                    desc="SAM test IoU (merged encoder)",
-                )
-                mlflow.log_metric("test_mean_iou_lowres", tiou)
-
-        full_path = output_dir / "mobile_sam_full.pt"
-        save_sam_checkpoint(full_path, sam)
-        mlflow.log_artifact(str(full_path), artifact_path="checkpoints")
-
-    finally:
-        if mlflow.active_run():
-            mlflow.end_run()
-
-
-def _sam_collate(batch: List[Any]) -> List[Any]:
-    return batch
-
-
-def run_full_sam(
-    cfg: dict,
-    cfg_path: Path,
-    mobilesam_root: Path,
-    num_gpus: int,
-) -> None:
-    device = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
-    data_cfg = cfg["data"]
-    train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
-    if not data_cfg.get("annotation_root"):
-        raise ValueError("full_sam requires data.annotation_root with mask JSON per image.")
     out_cfg = cfg.get("output", {})
     output_dir = Path(out_cfg.get("dir", "./training_outputs")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -871,7 +361,9 @@ def run_full_sam(
         train_ds = torch.utils.data.Subset(train_ds, list(range(n_train)))
         val_ds = torch.utils.data.Subset(val_ds, list(range(n_val)))
         test_ds = torch.utils.data.Subset(test_ds, list(range(n_test)))
-        print(f"Using {sam_inst_frac*100:.1f}% of data: train={n_train}, val={n_val}, test={n_test}", file=sys.stderr)
+        if world_rank == 0:
+            print(f"Using {sam_inst_frac*100:.1f}%: train={n_train}, val={n_val}, test={n_test}", file=sys.stderr)
+    
     sam_train = DataLoader(
         train_ds,
         batch_size=batch_size,
@@ -901,9 +393,7 @@ def run_full_sam(
     sam_ckpt_resolved = resolve_pretrained_checkpoint(cfg)
 
     sam = build_sam_tiny(mobilesam_root, sam_ckpt_resolved, device)
-    if num_gpus > 1:
-        sam = nn.DataParallel(sam, device_ids=list(range(num_gpus)))
-        print(f"Using {num_gpus} GPUs for full SAM training", file=sys.stderr)
+    sam = nn.DataParallel(sam, device_ids=[local_rank])
 
     opt_name = train_cfg.get("optimizer", "adamw").lower()
     lr = float(train_cfg.get("learning_rate", 1e-4))
@@ -914,23 +404,34 @@ def run_full_sam(
         optimizer, gamma=float(train_cfg.get("scheduler_gamma", 0.9))
     )
 
+    multimask = bool(cfg.get("sam", {}).get("multimask_output", False))
+    epochs = int(train_cfg.get("epochs", 8))
+    show_tqdm = train_cfg.get("show_progress", True) and world_rank == 0
+    
     mlflow_cfg = cfg.get("mlflow", {})
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI") or mlflow_cfg.get(
         "tracking_uri", "http://127.0.0.1:5000"
     )
     experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-sam")
     run_name = mlflow_cfg.get("run_name")
-    sha = git_sha(_repo_root())
-    flat_params: Dict[str, str] = {}
-    cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
-    flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": str(num_gpus)}, flat_params)
-    multimask = bool(cfg.get("sam", {}).get("multimask_output", False))
-    epochs = int(train_cfg.get("epochs", 8))
-
+    
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
-    try:
-        _mlflow_start_run_safe(run_name)
+    
+    if world_rank == 0:
+        try:
+            mlflow.start_run(run_name=run_name, log_system_metrics=True)
+        except Exception as e:
+            print(f"MLflow start failed: {e}", file=sys.stderr)
+            if mlflow.active_run():
+                mlflow.end_run()
+            mlflow.start_run(run_name=run_name, log_system_metrics=False)
+        
+        sha = git_sha(_repo_root())
+        flat_params: Dict[str, str] = {}
+        cfg_flat = {k: v for k, v in cfg.items() if k != "mobilesam_root"}
+        flatten_cfg("", {**cfg_flat, "git_sha": sha, "training_gpus": "ray"}, flat_params)
+        
         for k, v in flat_params.items():
             mlflow.log_param(k, v)
         mlflow.log_param("config_path", str(cfg_path))
@@ -945,64 +446,107 @@ def run_full_sam(
         _log_mlflow_eval_batch_cap(train_cfg)
         if split_out.is_file():
             mlflow.log_artifact(str(split_out), artifact_path="split")
+        _log_mlflow_gpu_metric_init()
+        
+        mlflow.log_param("ray_worker_rank", world_rank)
+        mlflow.log_param("ray_local_rank", local_rank)
 
-        _mlflow_log_gpu_metric_init()
+    train_sam_epochs(
+        sam,
+        sam_train,
+        sam_val,
+        device,
+        epochs,
+        optimizer,
+        scheduler,
+        train_cfg,
+        multimask,
+        epoch_offset=0,
+        staging_dir=output_dir,
+        world_rank=world_rank,
+        log_to_mlflow=log_to_mlflow,
+    )
 
-        train_sam_epochs(
+    if world_rank == 0 and sam_test is not None and log_to_mlflow:
+        test_iou = eval_sam_loader_mean_iou(
             sam,
-            sam_train,
-            sam_val,
+            sam_test,
             device,
-            epochs,
-            optimizer,
-            scheduler,
-            train_cfg,
             multimask,
-            epoch_offset=0,
-            staging_dir=output_dir,
+            max_batches=resolve_eval_max_batches(train_cfg, sam_test),
+            show_progress=show_tqdm,
+            desc="SAM test IoU",
         )
-        if sam_test is not None:
-            tiou = eval_sam_loader_mean_iou(
-                sam,
-                sam_test,
-                device,
-                multimask,
-                max_batches=resolve_eval_max_batches(train_cfg, sam_test),
-                show_progress=train_cfg.get("show_progress", True),
-                desc="SAM test IoU",
-            )
-            mlflow.log_metric("test_mean_iou_lowres", tiou)
-            full_path = output_dir / "mobile_sam_full.pt"
-            save_sam_checkpoint(full_path, sam)
-            mlflow.log_artifact(str(full_path), artifact_path="checkpoints")
-    finally:
-        if mlflow.active_run():
-            mlflow.end_run()
+        mlflow.log_metric("test_mean_iou_lowres", test_iou)
+
+    if world_rank == 0:
+        full_path = output_dir / "mobile_sam_full.pt"
+        save_sam_checkpoint(full_path, sam)
+        mlflow.log_artifact(str(full_path), artifact_path="checkpoints")
+        print(f"Training completed. Run: http://129.114.27.60:8000", file=sys.stderr)
+        mlflow.end_run()
 
 
 def main() -> None:
-    mlflow.enable_system_metrics_logging()
-    
-    parser = argparse.ArgumentParser(description="Unified MobileSAM / TinyViT training")
+    parser = argparse.ArgumentParser(description="Ray Train MobileSAM training")
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--num-workers", type=int, default=2, help="Number of Ray workers (GPUs)")
     args = parser.parse_args()
-    args = parser.parse_args()
+
     cfg_path = Path(args.config).resolve()
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     train_top = cfg.get("training", {})
-    mode = train_top.get("mode", "encoder_distill")
+    mode = train_top.get("mode", "full_sam")
+    
+    if mode != "full_sam":
+        raise ValueError(f"Ray Train currently only supports full_sam mode, got {mode}")
 
     mobilesam_root = _resolve_mobilesam_root(cfg)
-    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-
-    if mode == "encoder_distill":
-        run_encoder_distill(cfg, cfg_path, mobilesam_root, num_gpus)
-    elif mode == "full_sam":
-        run_full_sam(cfg, cfg_path, mobilesam_root, num_gpus)
+    
+    num_workers = args.num_workers
+    if not torch.cuda.is_available():
+        num_workers = 1
+        print("CUDA not available, using 1 worker", file=sys.stderr)
     else:
-        raise ValueError(f"Unknown training.mode: {mode}")
+        available_gpus = torch.cuda.device_count()
+        num_workers = min(num_workers, available_gpus)
+        print(f"Using {num_workers} workers (GPUs available: {available_gpus})", file=sys.stderr)
+
+    config = {
+        "cfg": cfg,
+        "cfg_path": str(cfg_path),
+        "mobilesam_root": str(mobilesam_root),
+        "log_to_mlflow": True,
+    }
+
+    scaling_config = ScalingConfig(
+        num_workers=num_workers,
+        use_gpu=True,
+    )
+
+    run_config = RunConfig(
+        name=f"ray-mobilesam-{int(time.time())}",
+    )
+
+    mlflow.enable_system_metrics_logging()
+
+    ray.init(
+        ignore_reinit_error=True,
+        num_gpus=num_workers,
+    )
+
+    trainer = TorchTrainer(
+        train_loop_per_worker=train_fn,
+        train_loop_config=config,
+        scaling_config=scaling_config,
+        run_config=run_config,
+    )
+
+    result = trainer.fit()
+    
+    ray.shutdown()
 
 
 if __name__ == "__main__":

@@ -8,3 +8,4 @@ psutil>=5.9.0
 # AMD ROCm (Chameleon / CHI@TACC): GPU util in MLflow model + system metrics (pyrsmi / libamd_smi).
 pyrsmi>=1.0.0; sys_platform == "linux"
 pycocotools>=2.0.6
+ray[train]>=2.40.0
