@@ -1,18 +1,13 @@
-FROM python:3.11-slim
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+FROM nvcr.io/nvidia/tritonserver:24.05-py3-sdk
 
 RUN pip install --no-cache-dir \
-    numpy==1.26.4 \
-    Pillow==10.3.0 \
-    pycocotools==2.0.7 \
-    requests==2.31.0 \
-    tritonclient[http]==2.46.0
+    numpy \
+    Pillow \
+    pycocotools \
+    requests
 
 COPY serving_benchmark.py /app/serving_benchmark.py
 
+WORKDIR /app
+ENTRYPOINT []
 CMD ["python", "serving_benchmark.py"]

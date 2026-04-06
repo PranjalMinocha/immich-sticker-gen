@@ -132,21 +132,19 @@ services:
   triton_gpu1_serial:
     <<: *client-base
     environment:
-      DATA_DIR:          /data
-      TRITON_URL:        triton_server:8000
-      TRITON_MODEL:      mobile_sam_gpu_1
-      EXPERIMENT:        triton_serial
-      NUM_SERIAL_TRIALS: "100"
+      DATA_DIR:    /data
+      TRITON_URL:  triton_server:8000
+      TRITON_MODEL: mobile_sam_gpu_1
+      EXPERIMENT:  triton_serial
 
   triton_gpu1_concurrent:
     <<: *client-base
     environment:
-      DATA_DIR:        /data
-      TRITON_URL:      triton_server:8000
-      TRITON_MODEL:    mobile_sam_gpu_1
-      EXPERIMENT:      triton_concurrent
-      NUM_CONCURRENT:  "8"
-      CONCURRENT_REQS: "200"
+      DATA_DIR:      /data
+      TRITON_URL:    triton_server:8000
+      TRITON_MODEL:  mobile_sam_gpu_1
+      EXPERIMENT:    triton_concurrent
+      NUM_CONCURRENT: "8"
 
   triton_gpu1_poisson:
     <<: *client-base
@@ -162,12 +160,11 @@ services:
   triton_gpu2_concurrent:
     <<: *client-base
     environment:
-      DATA_DIR:        /data
-      TRITON_URL:      triton_server:8000
-      TRITON_MODEL:    mobile_sam_gpu_2
-      EXPERIMENT:      triton_concurrent
-      NUM_CONCURRENT:  "8"
-      CONCURRENT_REQS: "200"
+      DATA_DIR:      /data
+      TRITON_URL:    triton_server:8000
+      TRITON_MODEL:  mobile_sam_gpu_2
+      EXPERIMENT:    triton_concurrent
+      NUM_CONCURRENT: "8"
 
   triton_gpu2_poisson:
     <<: *client-base

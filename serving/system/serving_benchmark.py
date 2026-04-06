@@ -8,9 +8,8 @@ EXPERIMENT env var:
 """
 from __future__ import annotations
 
-import base64, concurrent.futures, json, os, time
+import base64, concurrent.futures, json, os, subprocess, time
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 from PIL import Image
@@ -55,6 +54,8 @@ def first_box(ann_path: str) -> list[float]:
     return [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())]
 
 
+# ── FastAPI ───────────────────────────────────────────────────────────────────
+
 def fastapi_request(image_b64: str, box: list[float]) -> dict:
     import requests
     t0   = time.perf_counter()
@@ -63,44 +64,19 @@ def fastapi_request(image_b64: str, box: list[float]) -> dict:
     resp.raise_for_status()
     data = resp.json()
     return {
-        "wall_ms":      wall_ms,
-        "encoder_ms":   data.get("encoder_ms", 0),
-        "decoder_ms":   data.get("decoder_ms", 0),
-    }
-
-
-def triton_request(image_b64: str, box: list[float]) -> dict:
-    from tritonclient.http import InferenceServerClient, InferInput, InferRequestedOutput
-    client  = InferenceServerClient(url=TRITON_URL)
-    inp_img = InferInput("INPUT_IMAGE", [1, 1], "BYTES")
-    inp_img.set_data_from_numpy(np.array([[image_b64]], dtype=object))
-    inp_box = InferInput("BOX", [1, 4], "FP32")
-    inp_box.set_data_from_numpy(np.array([box], dtype=np.float32))
-    t0 = time.perf_counter()
-    result = client.infer(
-        model_name=TRITON_MODEL,
-        inputs=[inp_img, inp_box],
-        outputs=[
-            InferRequestedOutput("MASK",       binary_data=False),
-            InferRequestedOutput("ENCODER_MS", binary_data=False),
-            InferRequestedOutput("DECODER_MS", binary_data=False),
-        ],
-    )
-    wall_ms = (time.perf_counter() - t0) * 1e3
-    return {
         "wall_ms":    wall_ms,
-        "encoder_ms": float(result.as_numpy("ENCODER_MS")[0, 0]),
-        "decoder_ms": float(result.as_numpy("DECODER_MS")[0, 0]),
+        "encoder_ms": data.get("encoder_ms", 0),
+        "decoder_ms": data.get("decoder_ms", 0),
     }
 
 
-def run_serial(fn: Callable, image_b64: str, box: list[float]) -> list[dict]:
-    for _ in range(3):           # warmup
+def run_serial(fn, image_b64: str, box: list[float]) -> list[dict]:
+    for _ in range(3):
         fn(image_b64, box)
     return [fn(image_b64, box) for _ in range(NUM_SERIAL_TRIALS)]
 
 
-def run_concurrent(fn: Callable, image_b64: str, box: list[float]) -> list[dict]:
+def run_concurrent(fn, image_b64: str, box: list[float]) -> list[dict]:
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_CONCURRENT) as ex:
         futs = [ex.submit(fn, image_b64, box) for _ in range(CONCURRENT_REQS)]
@@ -112,7 +88,7 @@ def run_concurrent(fn: Callable, image_b64: str, box: list[float]) -> list[dict]
     return results
 
 
-def run_poisson(fn: Callable, image_b64: str, box: list[float]) -> list[dict]:
+def run_poisson(fn, image_b64: str, box: list[float]) -> list[dict]:
     results  = []
     interval = 1.0 / RATE_REQS_PER_SEC
     deadline = time.perf_counter() + RATE_DURATION_SEC
@@ -131,14 +107,13 @@ def run_poisson(fn: Callable, image_b64: str, box: list[float]) -> list[dict]:
 
 def summarise(results: list[dict], duration_sec: float):
     if not results:
-        print("No results.")
-        return
+        print("No results."); return
     wall = np.array([r["wall_ms"]    for r in results])
     enc  = np.array([r["encoder_ms"] for r in results])
     dec  = np.array([r["decoder_ms"] for r in results])
     print()
     print("=" * 55)
-    print(f"Experiment : {EXPERIMENT}  |  model: {TRITON_MODEL if 'triton' in EXPERIMENT else 'fastapi'}")
+    print(f"Experiment : {EXPERIMENT}  |  model: fastapi")
     print("=" * 55)
     print(f"Requests completed           : {len(wall)}")
     print(f"Inference Latency (median)   : {np.percentile(wall,50):.2f} ms")
@@ -151,28 +126,62 @@ def summarise(results: list[dict], duration_sec: float):
     print()
 
 
-EXPERIMENT_MAP = {
+# ── Triton (perf_analyzer) ────────────────────────────────────────────────────
+
+def generate_perf_input(image_b64: str, box: list[float]):
+    path = DATA_DIR / "perf_input.json"
+    path.write_text(json.dumps({
+        "data": [{
+            "INPUT_IMAGE": {"content": [image_b64], "shape": [1]},
+            "BOX":         {"content": box,          "shape": [4]},
+        }]
+    }))
+
+
+def run_perf_analyzer(extra_args: list[str]):
+    cmd = [
+        "perf_analyzer",
+        "-u", TRITON_URL,
+        "-m", TRITON_MODEL,
+        "--input-data", str(DATA_DIR / "perf_input.json"),
+        "-b", "1",
+        "--measurement-interval", str(int(RATE_DURATION_SEC * 1000)),
+    ] + extra_args
+    print(f"\n>>> {' '.join(cmd)}\n")
+    subprocess.run(cmd)
+
+
+FASTAPI_EXPERIMENTS = {
     "fastapi_serial":     (fastapi_request, run_serial),
     "fastapi_concurrent": (fastapi_request, run_concurrent),
     "fastapi_poisson":    (fastapi_request, run_poisson),
-    "triton_serial":      (triton_request,  run_serial),
-    "triton_concurrent":  (triton_request,  run_concurrent),
-    "triton_poisson":     (triton_request,  run_poisson),
+}
+
+TRITON_EXPERIMENTS = {
+    "triton_serial":     ["--concurrency-range", "1"],
+    "triton_concurrent": ["--concurrency-range", str(NUM_CONCURRENT)],
+    "triton_poisson":    ["--request-rate-range", str(int(RATE_REQS_PER_SEC)),
+                          "--request-distribution", "poisson"],
 }
 
 if __name__ == "__main__":
-    if EXPERIMENT not in EXPERIMENT_MAP:
-        raise ValueError(f"Unknown EXPERIMENT='{EXPERIMENT}'. Choose from: {', '.join(EXPERIMENT_MAP)}")
+    all_experiments = list(FASTAPI_EXPERIMENTS) + list(TRITON_EXPERIMENTS)
+    if EXPERIMENT not in all_experiments:
+        raise ValueError(f"Unknown EXPERIMENT='{EXPERIMENT}'. Choose from: {', '.join(all_experiments)}")
 
     pairs     = load_manifest()
     image_b64 = encode_image(pairs[0]["image_path"])
     box       = first_box(pairs[0]["annotation_path"])
 
-    fn, runner = EXPERIMENT_MAP[EXPERIMENT]
     print(f"\n>>> Starting: {EXPERIMENT}")
     print("Waiting 10s for server to be ready...")
     time.sleep(10)
 
-    t0      = time.perf_counter()
-    results = runner(fn, image_b64, box)
-    summarise(results, time.perf_counter() - t0)
+    if EXPERIMENT in FASTAPI_EXPERIMENTS:
+        fn, runner = FASTAPI_EXPERIMENTS[EXPERIMENT]
+        t0      = time.perf_counter()
+        results = runner(fn, image_b64, box)
+        summarise(results, time.perf_counter() - t0)
+    else:
+        generate_perf_input(image_b64, box)
+        run_perf_analyzer(TRITON_EXPERIMENTS[EXPERIMENT])
