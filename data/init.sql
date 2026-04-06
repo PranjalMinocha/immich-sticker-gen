@@ -25,9 +25,9 @@ CREATE TABLE sticker_generations (
     user_saved_mask TEXT,
     s3_sticker_key VARCHAR(255),
     processing_time_ms INTEGER,
-    saved BOOLEAN,
-    num_tries INTEGER,
-    edited_pixels INTEGER,
+    saved BOOLEAN DEFAULT FALSE,
+    num_tries INTEGER DEFAULT 1,
+    edited_pixels INTEGER DEFAULT 0,
     used_for_training BOOLEAN DEFAULT FALSE,
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

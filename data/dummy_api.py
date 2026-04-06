@@ -133,41 +133,51 @@ def resolve_sticker(
     
     s3_sticker_key = None
     
-    # Only crop and upload to S3 if the user actually saved the sticker!
     if saved:
-        # 1. Fetch the original image location and bounding box
-        cur.execute("""
-            SELECT sg.bbox, sg.user_id, iu.s3_object_key 
-            FROM sticker_generations sg
-            JOIN image_uploads iu ON sg.image_id = iu.image_id
-            WHERE sg.generation_id = %s;
-        """, (generation_id,))
-        row = cur.fetchone()
-        
-        # 2. Download the original image bytes from S3
-        img_obj = s3.get_object(Bucket=RAW_BUCKET, Key=row['s3_object_key'])
-        image_bytes = img_obj['Body'].read()
-        
-        # 3. Crop the image using Pillow
-        bbox = row['bbox']
-        x, y, w, h = [int(coord) for coord in bbox]
-        
-        image = Image.open(io.BytesIO(image_bytes))
-        # Pillow expects a box tuple: (left, upper, right, lower)
-        cropped_image = image.crop((x, y, x + w, y + h))
-        
-        # 4. Save the cropped sticker to memory as a JPEG
-        img_byte_arr = io.BytesIO()
-        cropped_image.save(img_byte_arr, format='JPEG')
-        img_byte_arr = img_byte_arr.getvalue()
-        
-        # 5. Upload the final sticker to S3
-        s3_sticker_key = f"stickers/user_{row['user_id']}/gen_{generation_id}.jpg"
-        s3.put_object(Bucket=RAW_BUCKET, Key=s3_sticker_key, Body=img_byte_arr)
-        
-        print(f"Sticker saved physically to S3: {s3_sticker_key}")
+        try:
+            cur.execute("""
+                SELECT sg.bbox, sg.user_id, iu.s3_object_key 
+                FROM sticker_generations sg
+                JOIN image_uploads iu ON sg.image_id = iu.image_id
+                WHERE sg.generation_id = %s;
+            """, (generation_id,))
+            row = cur.fetchone()
+            
+            # 1. Fetch image from S3
+            img_obj = s3.get_object(Bucket=RAW_BUCKET, Key=row['s3_object_key'])
+            image_bytes = img_obj['Body'].read()
+            
+            # 2. Bulletproof Bounding Box Parsing
+            bbox_data = row['bbox']
+            # If psycopg2 returned a string, parse it into a list first
+            if isinstance(bbox_data, str):
+                bbox_data = json.loads(bbox_data)
+                
+            # Now safely cast the floats to integers for Pillow
+            x, y, w, h = [int(coord) for coord in bbox_data]
+            
+            # 3. Crop and Format Image
+            image = Image.open(io.BytesIO(image_bytes))
+            cropped_image = image.crop((x, y, x + w, y + h))
+            
+            # Prevent "Cannot write mode RGBA as JPEG" crashes
+            if cropped_image.mode != 'RGB':
+                cropped_image = cropped_image.convert('RGB')
+            
+            # 4. Save back to S3
+            img_byte_arr = io.BytesIO()
+            cropped_image.save(img_byte_arr, format='JPEG')
+            img_byte_arr = img_byte_arr.getvalue()
+            
+            s3_sticker_key = f"stickers/user_{row['user_id']}/gen_{generation_id}.jpg"
+            s3.put_object(Bucket=RAW_BUCKET, Key=s3_sticker_key, Body=img_byte_arr)
+            print(f"SUCCESS: Sticker saved to {s3_sticker_key}")
+            
+        except Exception as e:
+            # If S3 or Image processing fails, print the exact error to the Docker logs!
+            print(f"CRITICAL ERROR processing sticker for gen_id {generation_id}: {e}")
 
-    # 6. Update the database with the final status and S3 key
+    # 5. Database Update (This will now run successfully!)
     cur.execute(
         """
         UPDATE sticker_generations 
