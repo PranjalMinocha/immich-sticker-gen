@@ -79,3 +79,4 @@ services:
 # Declare the persistent volume for the database
 volumes:
   pg_data:
+  minio_data:
