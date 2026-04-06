@@ -106,7 +106,7 @@ def compile_training_batch():
 
     # --- 5. State Update: Mark as Used in Postgres ---
     # Extract the IDs that were just selected to update the source database
-    processed_ids = [row.generation_id for row in df.collect()]
+    processed_ids = [row.generation_id for row in df_filtered.collect()]
 
     if processed_ids:
         # 1. Open the connection
