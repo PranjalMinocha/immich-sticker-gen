@@ -1,7 +1,7 @@
-FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/tritonserver:24.05-py3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
