@@ -1,5 +1,5 @@
 """
-Triton Python backend for MobileSAM — AMD GPU (onnxruntime-rocm).
+Triton Python backend for MobileSAM — NVIDIA GPU (onnxruntime-gpu).
 
 Inputs:
   INPUT_IMAGE  TYPE_STRING [1]  base64 JPEG
@@ -18,7 +18,7 @@ from PIL import Image
 
 PIXEL_MEAN = np.array([123.675, 116.28,  103.53], dtype=np.float32)
 PIXEL_STD  = np.array([ 58.395,  57.12,  57.375], dtype=np.float32)
-PROVIDERS  = ["ROCMExecutionProvider", "CPUExecutionProvider"]
+PROVIDERS  = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 def _preprocess(image_rgb: np.ndarray, size: int = 1024) -> np.ndarray:

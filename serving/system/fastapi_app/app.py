@@ -1,5 +1,5 @@
 """
-MobileSAM FastAPI inference endpoint — AMD GPU (onnxruntime-rocm).
+MobileSAM FastAPI inference endpoint — NVIDIA GPU (onnxruntime-gpu).
 
 POST /predict
   Input:  { "image": "<base64 jpg>",
@@ -26,28 +26,12 @@ DECODER_ONNX = os.path.join(MODEL_DIR, "mobile_sam_decoder.onnx")
 PIXEL_MEAN = np.array([123.675, 116.28,  103.53], dtype=np.float32)
 PIXEL_STD  = np.array([ 58.395,  57.12,  57.375], dtype=np.float32)
 
-# ROCm execution provider — falls back to CPU if ROCm is unavailable
-PROVIDERS = ["ROCMExecutionProvider", "CPUExecutionProvider"]
+PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 enc_sess = ort.InferenceSession(ENCODER_ONNX, providers=PROVIDERS)
 dec_sess = ort.InferenceSession(DECODER_ONNX, providers=PROVIDERS)
 
-# Warmup: trigger MIOpen kernel find/compile so first real request doesn't fail
-_dummy_img = np.zeros((1, 3, 1024, 1024), dtype=np.float32)
-(_dummy_emb,) = enc_sess.run(["image_embeddings"], {"image": _dummy_img})
-dec_sess.run(
-    ["masks", "iou_predictions", "low_res_masks"],
-    {
-        "image_embeddings": _dummy_emb,
-        "point_coords":     np.zeros((1, 5, 2), dtype=np.float32),
-        "point_labels":     np.array([[1, -1, -1, -1, -1]], dtype=np.float32),
-        "mask_input":       np.zeros((1, 1, 256, 256), dtype=np.float32),
-        "has_mask_input":   np.array([0], dtype=np.float32),
-        "orig_im_size":     np.array([1024, 1024], dtype=np.float32),
-    },
-)
-
-app = FastAPI(title="MobileSAM API (ROCm)")
+app = FastAPI(title="MobileSAM API (CUDA)")
 
 
 class PredictRequest(BaseModel):

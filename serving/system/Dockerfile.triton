@@ -1,27 +1,9 @@
 FROM nvcr.io/nvidia/tritonserver:24.05-py3
 
-ARG ROCM_VERSION=7.0.1
-ARG AMDGPU_VERSION=7.0.1.70001
-
-USER root
-
-RUN wget https://repo.radeon.com/amdgpu-install/${ROCM_VERSION}/ubuntu/noble/amdgpu-install_${AMDGPU_VERSION}-1_all.deb && \
-    apt-get update --yes && \
-    apt-get install --yes ./amdgpu-install_${AMDGPU_VERSION}-1_all.deb && \
-    amdgpu-install --usecase=rocm -y && \
-    rm *.deb
-
-ENV PATH="/opt/rocm/bin:${PATH}"
-
 RUN pip install --no-cache-dir \
-    opencv-python-headless==4.9.0.80 \
-    Pillow==10.3.0 \
-    numpy==1.26.4 \
-    onnx==1.18.0 \
-    coloredlogs flatbuffers packaging protobuf sympy
-
-RUN pip install --no-cache-dir --no-index \
-    --find-links https://repo.radeon.com/rocm/manylinux/rocm-rel-7.0 \
-    onnxruntime-rocm
+    opencv-python-headless \
+    Pillow \
+    numpy \
+    onnxruntime-gpu==1.18.1
 
 CMD ["tritonserver", "--model-repository=/models"]

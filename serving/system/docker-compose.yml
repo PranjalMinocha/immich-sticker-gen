@@ -30,12 +30,13 @@ version: "3.9"
 # ─────────────────────────────────────────────────────────────────────────────
 
 x-gpu: &gpu
-  devices:
-    - /dev/kfd
-    - /dev/dri
-  group_add:
-    - video
-    - render
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
 
 x-client-base: &client-base
   build:
@@ -75,9 +76,6 @@ services:
       - serving_data:/data
     environment:
       MODEL_DIR: /data
-      MIOPEN_FIND_MODE: "1"
-      MIOPEN_USER_DB_PATH: /tmp/miopen
-      MIOPEN_SYSTEM_DB_PATH: /tmp/miopen
     ports:
       - "8000:8000"
     depends_on:
@@ -95,9 +93,6 @@ services:
       - ./triton_models:/models
     environment:
       MODEL_DIR: /data
-      MIOPEN_FIND_MODE: "1"
-      MIOPEN_USER_DB_PATH: /tmp/miopen
-      MIOPEN_SYSTEM_DB_PATH: /tmp/miopen
     ports:
       - "8001:8000"
       - "8002:8001"
