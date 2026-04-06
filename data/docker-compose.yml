@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   ingest-data:
     build: 
       context: .
-      dockerfile: Dockerfile.ingest
+      dockerfile: Dockerfile
     env_file:
       - .env 
     command: [
@@ -15,9 +13,33 @@ services:
   split-data:
     build: 
       context: .
-      dockerfile: Dockerfile.ingest
+      dockerfile: Dockerfile
     env_file:
       - .env
     volumes:
       - ./split_data.py:/app/split_data.py
     command: ["split_data.py", "--seed", "42"]
+
+  dummy-api:
+      build: 
+        context: .
+        dockerfile: Dockerfile
+      env_file:
+        - .env  # CRITICAL: Gives the API access to S3_ENDPOINT, S3_ACCESS_KEY, etc.
+      ports:
+        - "8000:8000"
+      volumes:
+        - ./dummy_api.py:/app/dummy_api.py
+      command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
+      depends_on:
+        - postgres
+
+  traffic-generator:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data_generator.py:/app/data_generator.py
+    command: ["python", "data_generator.py"]
+    depends_on:
+      - dummy-api

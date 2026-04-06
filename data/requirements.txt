@@ -1,0 +1,15 @@
+# --- Core Data Engineering ---
+boto3
+tqdm
+Pillow
+scikit-learn
+
+# --- Application API & Database ---
+fastapi
+uvicorn[standard]
+python-multipart
+psycopg2-binary
+
+# --- Synthetic Data Generation ---
+requests
+faker
