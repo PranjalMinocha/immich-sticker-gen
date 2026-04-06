@@ -23,6 +23,7 @@ CREATE TABLE sticker_generations (
     point_coords JSONB,
     ml_suggested_mask TEXT,
     user_saved_mask TEXT,
+    s3_sticker_key VARCHAR(255),
     processing_time_ms INTEGER,
     saved BOOLEAN,
     num_tries INTEGER,

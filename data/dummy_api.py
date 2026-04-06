@@ -7,6 +7,8 @@ import os
 import boto3
 import json
 import string
+from PIL import Image
+import io
 
 app = FastAPI()
 
@@ -124,17 +126,58 @@ def edit_sticker(generation_id: int = Form(...), new_edited_pixels: int = Form(.
 def resolve_sticker(
     generation_id: int = Form(...), 
     saved: bool = Form(...),
-    user_saved_mask: str = Form(...) # NEW: Accept the final mask state
+    user_saved_mask: str = Form(...)
 ):
-    """Phase 3: User saves or discards the final mask state."""
     conn = get_db_connection()
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    s3_sticker_key = None
+    
+    # Only crop and upload to S3 if the user actually saved the sticker!
+    if saved:
+        # 1. Fetch the original image location and bounding box
+        cur.execute("""
+            SELECT sg.bbox, sg.user_id, iu.s3_object_key 
+            FROM sticker_generations sg
+            JOIN image_uploads iu ON sg.image_id = iu.image_id
+            WHERE sg.generation_id = %s;
+        """, (generation_id,))
+        row = cur.fetchone()
+        
+        # 2. Download the original image bytes from S3
+        img_obj = s3.get_object(Bucket=RAW_BUCKET, Key=row['s3_object_key'])
+        image_bytes = img_obj['Body'].read()
+        
+        # 3. Crop the image using Pillow
+        bbox = json.loads(row['bbox'])
+        x, y, w, h = bbox
+        
+        image = Image.open(io.BytesIO(image_bytes))
+        # Pillow expects a box tuple: (left, upper, right, lower)
+        cropped_image = image.crop((x, y, x + w, y + h))
+        
+        # 4. Save the cropped sticker to memory as a JPEG
+        img_byte_arr = io.BytesIO()
+        cropped_image.save(img_byte_arr, format='JPEG')
+        img_byte_arr = img_byte_arr.getvalue()
+        
+        # 5. Upload the final sticker to S3
+        s3_sticker_key = f"stickers/user_{row['user_id']}/gen_{generation_id}.jpg"
+        s3.put_object(Bucket=RAW_BUCKET, Key=s3_sticker_key, Body=img_byte_arr)
+        
+        print(f"Sticker saved physically to S3: {s3_sticker_key}")
+
+    # 6. Update the database with the final status and S3 key
     cur.execute(
-        "UPDATE sticker_generations SET saved = %s, user_saved_mask = %s WHERE generation_id = %s;", 
-        (saved, user_saved_mask, generation_id)
+        """
+        UPDATE sticker_generations 
+        SET saved = %s, user_saved_mask = %s, s3_sticker_key = %s 
+        WHERE generation_id = %s;
+        """, 
+        (saved, user_saved_mask, s3_sticker_key, generation_id)
     )
     conn.commit()
     cur.close()
     conn.close()
     
-    return {"status": "resolved", "saved": saved}
+    return {"status": "resolved", "saved": saved, "s3_sticker_key": s3_sticker_key}
