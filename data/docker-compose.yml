@@ -4,11 +4,10 @@ services:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - .env 
-    command: [
-      "ingest_data.py", 
-      "--url", "https://scontent-phl2-1.xx.fbcdn.net/m1/v/t6/An_-m2SWozW4o-FatJEIY1Anj32x8TnUqad9WMAVkMaZHkDyHfjpLcVlQoTFhgQihg8U4R5KqJvoJrtBwT3eKH-Yj5-LfY0.tar?_nc_gid=PcFgPVoSsMqKDvKgOr5zJw&_nc_oc=Adq2c5srRedJ84iAVF1QohSl9rYosVjS9qxGn3pbMQUfXgiSKMDbTXaHGdUOVvlxucfcomANdrznwMLnDmpUym--&ccb=10-5&oh=00_Af3mz4o6hTEW1tm4yCgxAUF-qj1lha5nu6rcPlp_xVLLpw&oe=69FA47FE&_nc_sid=0fdd51"
-    ]
+      - .env
+    volumes:
+      - ./ingest_data.py:/app/ingest_data.py
+    command: ["python", "ingest_data.py"]
 
   split-data:
     build: 
@@ -18,28 +17,53 @@ services:
       - .env
     volumes:
       - ./split_data.py:/app/split_data.py
-    command: ["split_data.py", "--seed", "42"]
+    command: ["python", "split_data.py", "--seed", "42"]
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: sticker_gen
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  adminer:
+    image: adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
 
   dummy-api:
-      build: 
-        context: .
-        dockerfile: Dockerfile
-      env_file:
-        - .env  # CRITICAL: Gives the API access to S3_ENDPOINT, S3_ACCESS_KEY, etc.
-      ports:
-        - "8000:8000"
-      volumes:
-        - ./dummy_api.py:/app/dummy_api.py
-      command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
-      depends_on:
-        - postgres
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./dummy_api.py:/app/dummy_api.py
+    command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      - postgres
 
   traffic-generator:
     build: 
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - .env
     volumes:
       - ./data_generator.py:/app/data_generator.py
     command: ["python", "data_generator.py"]
     depends_on:
       - dummy-api
+
+# Declare the persistent volume for the database
+volumes:
+  pg_data:
