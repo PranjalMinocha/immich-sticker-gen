@@ -26,7 +26,7 @@ s3 = boto3.client(
     aws_secret_access_key=S3_SECRET_KEY
 )
 
-def get_production_pairs_from_s3():
+def get_image_json_pairs():
     """Reads the prod_manifest.csv from S3 and returns a list of S3 Keys."""
     print("Fetching production manifest from Chameleon S3...")
     
