@@ -41,20 +41,24 @@ def compile_training_batch():
     # We push down the basic filters directly to the database for efficiency
     query = """
     (SELECT 
-        generation_id, 
-        user_id, 
-        image_id, 
-        bbox::text as bbox, 
-        point_coords::text as point_coords, 
-        ml_suggested_mask, 
-        user_saved_mask, 
-        s3_sticker_key, 
-        processing_time_ms, 
-        num_tries, 
-        edited_pixels, 
-        generated_at
-    FROM sticker_generations 
-    WHERE saved = TRUE AND used_for_training = FALSE) AS training_candidates
+        sg.generation_id, 
+        sg.user_id, 
+        sg.image_id, 
+        sg.bbox::text as bbox, 
+        sg.point_coords::text as point_coords, 
+        sg.ml_suggested_mask, 
+        sg.user_saved_mask, 
+        sg.s3_sticker_key, 
+        sg.processing_time_ms, 
+        sg.num_tries, 
+        sg.edited_pixels, 
+        sg.generated_at
+    FROM sticker_generations sg
+    JOIN users u ON sg.user_id = u.user_id
+    WHERE sg.saved = TRUE 
+    AND sg.used_for_training = FALSE
+    AND u.ml_training_opt_in = TRUE
+    AND sg.edited_pixels < 2000) AS training_candidates
     """
 
     df_candidates = spark.read.format("jdbc") \
@@ -86,9 +90,19 @@ def compile_training_batch():
 
     # --- 4. Load: Write to Iceberg Data Lakehouse ---
     # This automatically versions the data. We use append to add to the existing table.
-    df_final_batch.writeTo("lakehouse.ml_datasets.training_data") \
-        .tableProperty("write.format.default", "parquet") \
-        .append()
+    spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.ml_datasets")
+
+    table_name = "lakehouse.ml_datasets.training_data"
+
+    # 2. Smart Write: Create the table on the first run, append on future runs
+    if spark.catalog.tableExists(table_name):
+        print(f"Found existing Iceberg table. Appending {df_filtered.count()} records...")
+        df_filtered.writeTo(table_name).append()
+    else:
+        print(f"First run detected! Creating Iceberg table and writing {df_filtered.count()} records...")
+        df_filtered.writeTo(table_name).create()
+
+    print("Batch successfully committed to Iceberg!")
 
     # --- 5. State Update: Mark as Used in Postgres ---
     # Extract the IDs that were just selected to update the source database
