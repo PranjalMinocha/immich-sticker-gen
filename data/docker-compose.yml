@@ -16,10 +16,8 @@ services:
     build: 
       context: .
       dockerfile: Dockerfile.ingest
+    env_file:
+      - .env
     volumes:
-      - ./dataset_storage:/app/data
-    command: >
-      split_data.py 
-      --source /app/data/extracted_sa1b_data 
-      --output /app/data/ml_dataset_split 
-      --seed 42
+      - ./split_data.py:/app/split_data.py
+    command: ["split_data.py", "--seed", "42"]
