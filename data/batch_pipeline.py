@@ -96,11 +96,11 @@ def compile_training_batch():
 
     # 2. Smart Write: Create the table on the first run, append on future runs
     if spark.catalog.tableExists(table_name):
-        print(f"Found existing Iceberg table. Appending {df_filtered.count()} records...")
-        df_filtered.writeTo(table_name).append()
+        print(f"Found existing Iceberg table. Appending {batch_count} records...")
+        df_final_batch.writeTo(table_name).append()
     else:
-        print(f"First run detected! Creating Iceberg table and writing {df_filtered.count()} records...")
-        df_filtered.writeTo(table_name).create()
+        print(f"First run detected! Creating Iceberg table and writing {batch_count} records...")
+        df_final_batch.writeTo(table_name).create()
 
     print("Batch successfully committed to Iceberg!")
 
