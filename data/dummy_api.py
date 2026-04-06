@@ -149,8 +149,8 @@ def resolve_sticker(
         image_bytes = img_obj['Body'].read()
         
         # 3. Crop the image using Pillow
-        bbox = json.loads(row['bbox'])
-        x, y, w, h = bbox
+        bbox = row['bbox']
+        x, y, w, h = [int(coord) for coord in bbox]
         
         image = Image.open(io.BytesIO(image_bytes))
         # Pillow expects a box tuple: (left, upper, right, lower)
