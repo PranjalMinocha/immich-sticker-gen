@@ -8,7 +8,7 @@ from tqdm import tqdm
 S3_ENDPOINT = os.getenv("S3_ENDPOINT")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
-RAW_BUCKET = os.getenv["RAW_BUCKET"]
+RAW_BUCKET = os.getenv("RAW_BUCKET")
 
 
 s3 = boto3.client(
