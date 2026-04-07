@@ -4,7 +4,10 @@ Ray Train entry point for MobileSAM training.
 Uses TorchTrainer for multi-GPU training on AMD GPUs (ROCm).
 
 Usage:
-    python ray_train.py --config ~/training_out/run.yaml
+    python train.py --config configs/run.yaml
+
+For hyperparameter tuning, use tune_train.py:
+    python tune_train.py --config configs/tune_example.yaml
 """
 from __future__ import annotations
 
@@ -13,12 +16,16 @@ os.environ["RAY_DEDUP_LOGS"] = "0"
 os.environ["RAY_LOG_TO_STDERR"] = "0"
 os.environ["GLOG_minloglevel"] = "3"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["RAY_TRAIN_ENABLE_V2_MIGRATION_WARNINGS"] = "0"
 
 import warnings
 warnings.filterwarnings("ignore")
 
 import argparse
+import json
 import math
+import re
+import subprocess
 import sys
 import time
 from itertools import islice
@@ -287,6 +294,7 @@ def train_sam_epochs(
                     epoch_gpu_util_sum / epoch_gpu_util_count,
                     step=ep,
                 )
+        print(f"sam_train_loss_epoch={epoch_loss / max(nb, 1)}", file=sys.stderr)
         
         if world_rank == 0 and val_loader is not None and log_to_mlflow:
             viou = eval_sam_loader_mean_iou(
@@ -299,6 +307,7 @@ def train_sam_epochs(
                 desc=f"SAM val IoU ep {ep}",
             )
             mlflow.log_metric("val_mean_iou_lowres", viou, step=ep)
+            print(f"val_mean_iou_lowres={viou}", file=sys.stderr)
 
 
 def train_fn(config: Dict[str, Any]) -> None:
@@ -499,6 +508,10 @@ def main() -> None:
 
     train_top = cfg.get("training", {})
     mode = train_top.get("mode", "full_sam")
+    
+    out_cfg = cfg.get("output", {})
+    output_dir = Path(out_cfg.get("dir", "./training_outputs")).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     if mode != "full_sam":
         raise ValueError(f"Ray Train currently only supports full_sam mode, got {mode}")

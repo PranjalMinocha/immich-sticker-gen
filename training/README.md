@@ -9,6 +9,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | File / directory | Role |
 |------------------|------|
 | [`train.py`](train.py) | **Main entry:** `training.mode` + `training.use_pretrained` / `pretrained_checkpoint_path` |
+| [`tune_train.py`](tune_train.py) | Hyperparameter tuning entry: runs Ray Tune with config-defined search space |
 | [`training_core.py`](training_core.py) | flatten_cfg, TinyViT import path, encoder loss, encoder eval |
 | [`sam_utils.py`](sam_utils.py) | Trainable SAM forward, merge encoder into checkpoint, seg loss / IoU |
 | [`dataset_sa1b.py`](dataset_sa1b.py) | Splits, `data_dir` + `embeddings_dir` pairs, per-instance mask JSON for `full_sam` |
@@ -17,6 +18,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | [`configs/tinyvit_baseline.yaml`](configs/tinyvit_baseline.yaml) | Encoder distillation template (`training.pretrained_checkpoint_path` when `use_pretrained: true`) |
 | [`configs/tinyvit_local_sa1b.yaml`](configs/tinyvit_local_sa1b.yaml) | Local smoke-test paths |
 | [`configs/example_full_sam.yaml`](configs/example_full_sam.yaml) | Full-model mask supervision (after distill: `pretrained_checkpoint_path` → prior `mobile_sam_full.pt`) |
+| [`configs/tune_example.yaml`](configs/tune_example.yaml) | Hyperparameter tuning example with `tune:` section |
 | [`requirements.txt`](requirements.txt) | Python deps (install **PyTorch** separately for your CUDA / ROCm stack) |
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
 | [`setup_host.sh`](setup_host.sh) | Chameleon host: rclone, **sync** `Raw-Data` + `Teacher-Embeddings` to local disk, extract sample tarball, optional mount |
@@ -208,6 +210,41 @@ docker run --rm \
 Copy and edit **`training/configs/chameleon_docker.yaml`** into `/out/run.yaml` (set **`training.pretrained_checkpoint_path`**, MLflow URI), or adjust **`data.data_dir`** / **`data.embeddings_dir`** to match `/data`.
 
 **Multi-GPU training:** Use `--num-workers N` to train on N GPUs (default: 2). The script uses Ray Train for distributed training.
+
+### 3.3 Hyperparameter tuning (Ray Tune)
+
+For hyperparameter tuning, use `tune_train.py` instead of `train.py`:
+
+```bash
+DATA_ROOT="${LOCAL_DATA_ROOT:-$HOME/training-data}"
+docker run --rm \
+  --shm-size=10.24gb \
+  --device=/dev/kfd --device=/dev/dri --group-add video \
+  -v "$DATA_ROOT:/data:ro" \
+  -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
+  -v ~/training_out:/out \
+  -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
+  -e MOBILESAM_ROOT=/mobilesam \
+  immich-sticker-train:rocm \
+  python3 tune_train.py --config /out/run.yaml --num-trials 4 --epochs 1
+```
+
+Configure tuning in your YAML file:
+
+```yaml
+tune:
+  enabled: true
+  num_trials: 4
+  epochs: 1
+  search_space:
+    learning_rates: [0.0001, 0.00005, 0.00001]
+    weight_decays: [0.01, 0.001]
+    batch_sizes: [4, 2]
+    scheduler_gammas: [0.9]
+    optimizers: [adamw]
+```
+
+See `configs/tune_example.yaml` for a full example.
 
 ---
 

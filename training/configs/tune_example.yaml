@@ -1,0 +1,54 @@
+# Example config with hyperparameter tuning enabled
+
+training:
+  mode: full_sam
+  use_pretrained: true
+  pretrained_checkpoint_path: /mobilesam/weights/mobile_sam.pt
+
+mobilesam_root: null
+
+data:
+  data_dir: /data/Raw-Data/extracted
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
+  annotation_root: /data/Raw-Data/extracted
+  image_size: 1024
+  seed: 42
+  train_frac: 0.7
+  val_frac: 0.1
+  test_frac: 0.2
+  split_manifest: null
+  num_workers: 4
+  sam_instance_frac: 0.001
+
+sam:
+  multimask_output: false
+
+train:
+  epochs: 1
+  batch_size: 4
+  optimizer: adamw
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  scheduler_gamma: 0.9
+  log_interval_batches: 20
+  show_progress: true
+  val_preview_samples: 0
+
+tune:
+  enabled: true
+  num_trials: 4
+  epochs: 1
+  search_space:
+    learning_rates: [0.0001, 0.00005, 0.00001]
+    weight_decays: [0.01, 0.001]
+    batch_sizes: [4, 2]
+    scheduler_gammas: [0.9]
+    optimizers: [adamw]
+
+mlflow:
+  tracking_uri: http://129.114.27.60:8000
+  experiment_name: immich-sticker-sam
+  run_name: null
+
+output:
+  dir: /tmp/immich_sticker_training_out
