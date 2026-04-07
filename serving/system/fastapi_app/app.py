@@ -7,7 +7,8 @@ BACKEND=pytorch             PyTorch, direct encoder/decoder calls (thread-safe)
 POST /predict
   Input:  { "image": "<base64>", "bbox": [x, y, w, h] }
        OR { "image": "<base64>", "point_coords": [[x, y]] }
-  Output: { "mask": "<base64 png>", "inference_ms": float, "encoder_ms": float, "decoder_ms": float }
+       OR { "image": "<base64>", "bbox": [...], "point_coords": [...] }
+  Output: { "mask": "<base64 png>", "inference_ms": float, "encoder_ms": float, "decoder_ms": float, "iou_score": float }
 """
 from __future__ import annotations
 
@@ -69,13 +70,16 @@ def _preprocess(image_rgb: np.ndarray, size: int = 1024) -> np.ndarray:
 
 def _infer_pytorch(image: np.ndarray, req: PredictRequest):
     orig_h, orig_w = image.shape[:2]
+    scale = 1024 / max(orig_h, orig_w)
+    new_h  = int(orig_h * scale + 0.5)
+    new_w  = int(orig_w * scale + 0.5)
+
     t0 = time.perf_counter()
     image_tensor = torch.from_numpy(_preprocess(image)).to(_device)
     with torch.no_grad():
         embedding = _sam.image_encoder(image_tensor)
     encoder_ms = (time.perf_counter() - t0) * 1e3
 
-    scale = 1024 / max(orig_h, orig_w)
     if req.bbox:
         x, y, w, h = [c * scale for c in req.bbox]
         coords = torch.tensor([[[x, y], [x + w, y + h]]], dtype=torch.float32, device=_device)
@@ -95,6 +99,7 @@ def _infer_pytorch(image: np.ndarray, req: PredictRequest):
             dense_prompt_embeddings=dense,
             multimask_output=False,
         )
+        masks = _sam.postprocess_masks(masks, input_size=(new_h, new_w), original_size=(orig_h, orig_w))
     decoder_ms = (time.perf_counter() - t0) * 1e3
     return (masks[0, 0] > _sam.mask_threshold).cpu().numpy(), encoder_ms, decoder_ms, float(iou[0, 0])
 
