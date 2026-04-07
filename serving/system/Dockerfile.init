@@ -1,3 +1,4 @@
+# serving/system/Dockerfile.init
 FROM python:3.12-slim
 
 RUN apt-get update --yes && \

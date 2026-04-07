@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# serving/model/download_data.py
 """
 Download a 50-image SA-1B subset and the MobileSAM checkpoint.
 Run once; subsequent runs skip already-downloaded files.

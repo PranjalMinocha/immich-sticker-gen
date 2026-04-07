@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# serving/system/serving_benchmark.py
 """
 Serving benchmark client for MobileSAM.
 
