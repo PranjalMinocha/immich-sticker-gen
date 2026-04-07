@@ -13,6 +13,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import yaml
 from ray import tune
@@ -39,7 +40,7 @@ def train_with_config(config: dict, cfg: dict, cfg_path: Path) -> None:
     from torch.utils.data import DataLoader
     from dataset_sa1b import SA1BSamDataset, build_datasets
     from sam_utils import build_sam_tiny, forward_sam_trainable, segmentation_loss, mean_iou_from_logits
-    from training_core import build_optimizer_sam, effective_train_cfg_for_eval
+    from train import build_optimizer_sam, effective_train_cfg_for_eval
     
     hyperparams = config
     train_cfg = effective_train_cfg_for_eval(cfg["train"], cfg["data"])
@@ -48,7 +49,31 @@ def train_with_config(config: dict, cfg: dict, cfg_path: Path) -> None:
         if k in train_cfg:
             train_cfg[k] = v
     
+    mlflow_cfg = cfg.get("mlflow", {})
+    mlflow_tracking_uri = mlflow_cfg.get("tracking_uri") or os.environ.get("MLFLOW_TRACKING_URI")
+    mlflow_exp_name = mlflow_cfg.get("experiment_name", "immich-sticker-tune")
+    mlflow_run_name = f"trial-lr-{hyperparams.get('learning_rate')}-wd-{hyperparams.get('weight_decay')}"
+    
+    if mlflow_tracking_uri:
+        import mlflow
+        mlflow.set_tracking_uri(mlflow_tracking_uri)
+        mlflow.set_experiment(mlflow_exp_name)
+        mlflow.start_run(run_name=mlflow_run_name)
+        mlflow.log_params({
+            "learning_rate": hyperparams.get("learning_rate"),
+            "weight_decay": hyperparams.get("weight_decay"),
+            "batch_size": hyperparams.get("batch_size"),
+            "scheduler_gamma": hyperparams.get("scheduler_gamma"),
+            "optimizer": hyperparams.get("optimizer"),
+        })
+    else:
+        mlflow = None
+    
     data_cfg = cfg["data"]
+    split_out = Path(cfg.get("output", {}).get("dir", "/tmp")) / "split_manifest.json"
+    manifest_in = data_cfg.get("split_manifest")
+    manifest_path = Path(manifest_in).resolve() if manifest_in else None
+
     _, _, _, _, _, jpg_splits = build_datasets(
         data_cfg=data_cfg,
         img_size=int(data_cfg.get("image_size", 1024)),
@@ -56,6 +81,8 @@ def train_with_config(config: dict, cfg: dict, cfg_path: Path) -> None:
         train_frac=float(data_cfg.get("train_frac", 0.7)),
         val_frac=float(data_cfg.get("val_frac", 0.1)),
         test_frac=float(data_cfg.get("test_frac", 0.2)),
+        split_manifest=manifest_path,
+        split_manifest_out=split_out if manifest_path is None else None,
     )
 
     batch_size = int(train_cfg.get("batch_size", 4))
@@ -123,7 +150,17 @@ def train_with_config(config: dict, cfg: dict, cfg_path: Path) -> None:
             n_iou += len(batch)
         
         val_iou = tot_iou / max(n_iou, 1)
-        tune.report(**{metric: val_iou, "train_loss": train_loss / max(nb, 1)})
+        train_loss_avg = train_loss / max(nb, 1)
+        tune.report({metric: val_iou, "train_loss": train_loss_avg})
+        
+        if mlflow is not None:
+            mlflow.log_metrics({
+                metric: val_iou,
+                "train_loss": train_loss_avg,
+            }, step=epoch)
+    
+    if mlflow is not None:
+        mlflow.end_run()
 
 
 def main():
@@ -132,6 +169,8 @@ def main():
     parser.add_argument("--num-trials", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=1)
     args = parser.parse_args()
+    
+    import ray
 
     cfg_path = Path(args.config)
     with open(cfg_path) as f:
@@ -150,18 +189,57 @@ def main():
     
     cfg["tune_metric"] = metric
     
+    import torch
+    import os
+    
+    # Check for AMD ROCm GPUs
+    rocm_visible = os.environ.get("ROCm_VISIBLE_DEVICES")
+    amd_gpu_count = os.environ.get("GPU_DEVICE_ORDINAL")
+    if rocm_visible is not None or amd_gpu_count is not None:
+        num_gpus = 1  # At least one AMD GPU
+    else:
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    
+    num_trials = min(num_trials, num_gpus) if num_gpus > 0 else num_trials
+    max_concurrent = num_gpus if num_gpus > 0 else 1
+    
     print(f"Tuning: {num_trials} trials, {epochs} epochs, metric={metric}")
-
+    print(f"GPUs available: {num_gpus}, concurrent trials: {max_concurrent}")
+    
+    # Initialize Ray with GPU resources
+    if num_gpus > 0:
+        ray.init(
+            num_gpus=num_gpus,
+            ignore_reinit_error=True,
+        )
+    
+    if num_gpus > 0:
+        trainable = tune.with_resources(
+            lambda c: train_with_config(c, cfg, cfg_path),
+            resources={"cpu": 2, "gpu": 1}
+        )
+    else:
+        trainable = lambda c: train_with_config(c, cfg, cfg_path)
+    
     tuner = tune.Tuner(
-        lambda c: train_with_config(c, cfg, cfg_path),
-        tune_config=tune.TuneConfig(num_samples=num_trials, max_concurrent_trials=1),
+        trainable,
+        tune_config=tune.TuneConfig(
+            num_samples=num_trials, 
+            max_concurrent_trials=max_concurrent,
+        ),
         param_space=get_search_space(cfg),
+        run_config=tune.RunConfig(
+            name=f"tune-{int(time.time())}",
+        ),
     )
 
     results = tuner.fit()
     best = results.get_best_result(metric, mode_str)
     
     print(f"\nBest: {best.config}, {metric}={best.metrics.get(metric)}")
+    
+    import ray
+    ray.shutdown()
     
     out_dir = Path(cfg.get("output", {}).get("dir", "~/training_out"))
     (out_dir / "tune_results.json").write_text(str(best.config))

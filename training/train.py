@@ -17,9 +17,41 @@ os.environ["RAY_LOG_TO_STDERR"] = "0"
 os.environ["GLOG_minloglevel"] = "3"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["RAY_TRAIN_ENABLE_V2_MIGRATION_WARNINGS"] = "0"
+os.environ["RAY_SCHEDULER_EVENTS"] = "0"
+os.environ["RAY_AIR_SKIP_CONTROLLER_STATE_QUERY"] = "1"
+
+import sys
+
+class StderrFilter:
+    def __init__(self, real_stderr):
+        self._real = real_stderr
+        self._skip_next_newline = False
+        
+    def write(self, text):
+        if 'PlacementGroupCleaner' in text or 'Failed to query' in text:
+            self._skip_next_newline = True
+            return len(text)
+        if self._skip_next_newline and text in ('\n', '\n\n', '\n\n\n'):
+            self._skip_next_newline = False
+            return len(text)
+        self._real.write(text)
+        return len(text)
+        
+    def flush(self):
+        self._real.flush()
+        
+    def fileno(self):
+        return self._real.fileno()
+        
+    def isatty(self):
+        return self._real.isatty()
+
+sys.stderr = StderrFilter(sys.stderr)
 
 import warnings
 warnings.filterwarnings("ignore")
+
+import logging
 
 import argparse
 import json
@@ -230,7 +262,7 @@ def train_sam_epochs(
         epoch_gpu_util_sum = 0.0
         epoch_gpu_util_count = 0
         t0 = time.perf_counter()
-        bar = tqdm(train_loader, desc=f"SAM train ep {ep}", disable=not show_tqdm)
+        bar = tqdm(train_loader, desc=f"SAM train ep {ep}", disable=not show_tqdm, leave=False)
         for batch_idx, batch in enumerate(bar):
             for b in batch:
                 b["image"] = b["image"].to(device, non_blocking=True)
@@ -542,7 +574,7 @@ def main() -> None:
     run_config = RunConfig(
         name=f"ray-mobilesam-{int(time.time())}",
     )
-
+    
     mlflow.enable_system_metrics_logging()
 
     ray.init(
