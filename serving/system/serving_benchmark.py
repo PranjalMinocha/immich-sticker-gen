@@ -70,13 +70,20 @@ def fastapi_request(image_b64: str, box: list[float]) -> dict:
     }
 
 
-def run_serial(fn, image_b64: str, box: list[float]) -> list[dict]:
+def run_serial(fn, image_b64: str, box: list[float]) -> tuple[list[dict], int]:
     for _ in range(3):
         fn(image_b64, box)
-    return [fn(image_b64, box) for _ in range(NUM_SERIAL_TRIALS)]
+    results, errors = [], 0
+    for _ in range(NUM_SERIAL_TRIALS):
+        try:
+            results.append(fn(image_b64, box))
+        except Exception as e:
+            print(f"  error: {e}")
+            errors += 1
+    return results, NUM_SERIAL_TRIALS
 
 
-def run_concurrent(fn, image_b64: str, box: list[float]) -> list[dict]:
+def run_concurrent(fn, image_b64: str, box: list[float]) -> tuple[list[dict], int]:
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=NUM_CONCURRENT) as ex:
         futs = [ex.submit(fn, image_b64, box) for _ in range(CONCURRENT_REQS)]
@@ -85,10 +92,10 @@ def run_concurrent(fn, image_b64: str, box: list[float]) -> list[dict]:
                 results.append(f.result())
             except Exception as e:
                 print(f"  error: {e}")
-    return results
+    return results, CONCURRENT_REQS
 
 
-def run_poisson(fn, image_b64: str, box: list[float]) -> list[dict]:
+def run_poisson(fn, image_b64: str, box: list[float]) -> tuple[list[dict], int]:
     results  = []
     interval = 1.0 / RATE_REQS_PER_SEC
     deadline = time.perf_counter() + RATE_DURATION_SEC
@@ -102,10 +109,11 @@ def run_poisson(fn, image_b64: str, box: list[float]) -> list[dict]:
                 results.append(f.result())
             except Exception as e:
                 print(f"  error: {e}")
-    return results
+    return results, len(futures)
 
 
-def summarise(results: list[dict], duration_sec: float):
+def summarise(results: list[dict], total: int, duration_sec: float):
+    errors = total - len(results)
     if not results:
         print("No results."); return
     wall = np.array([r["wall_ms"]    for r in results])
@@ -115,7 +123,8 @@ def summarise(results: list[dict], duration_sec: float):
     print("=" * 55)
     print(f"Experiment : {EXPERIMENT}  |  model: fastapi")
     print("=" * 55)
-    print(f"Requests completed           : {len(wall)}")
+    print(f"Requests completed           : {len(wall)} / {total}")
+    print(f"Error rate                   : {errors/total*100:.1f}%  ({errors} errors)")
     print(f"Inference Latency (median)   : {np.percentile(wall,50):.2f} ms")
     print(f"Inference Latency (p95)      : {np.percentile(wall,95):.2f} ms")
     print(f"Inference Latency (p99)      : {np.percentile(wall,99):.2f} ms")
@@ -179,9 +188,9 @@ if __name__ == "__main__":
 
     if EXPERIMENT in FASTAPI_EXPERIMENTS:
         fn, runner = FASTAPI_EXPERIMENTS[EXPERIMENT]
-        t0      = time.perf_counter()
-        results = runner(fn, image_b64, box)
-        summarise(results, time.perf_counter() - t0)
+        t0             = time.perf_counter()
+        results, total = runner(fn, image_b64, box)
+        summarise(results, total, time.perf_counter() - t0)
     else:
         generate_perf_input(image_b64, box)
         run_perf_analyzer(TRITON_EXPERIMENTS[EXPERIMENT])
