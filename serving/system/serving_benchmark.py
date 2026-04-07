@@ -38,7 +38,8 @@ def encode_image(image_path: str) -> str:
         return base64.b64encode(f.read()).decode()
 
 
-def first_box(ann_path: str) -> list[float]:
+def first_bbox(ann_path: str) -> list[float]:
+    """Returns [x, y, w, h] (COCO format)."""
     from pycocotools import mask as mask_utils
     data = json.loads(Path(ann_path).read_text())
     anns = data.get("annotations", [])
@@ -51,15 +52,17 @@ def first_box(ann_path: str) -> list[float]:
     if m.ndim == 3:
         m = m[..., 0]
     ys, xs = np.where(m)
-    return [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())]
+    x, y = float(xs.min()), float(ys.min())
+    w, h = float(xs.max() - x), float(ys.max() - y)
+    return [x, y, w, h]
 
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 
-def fastapi_request(image_b64: str, box: list[float]) -> dict:
+def fastapi_request(image_b64: str, bbox: list[float]) -> dict:
     import requests
     t0   = time.perf_counter()
-    resp = requests.post(FASTAPI_URL, json={"image": image_b64, "box": box}, timeout=60)
+    resp = requests.post(FASTAPI_URL, json={"image": image_b64, "bbox": bbox}, timeout=60)
     wall_ms = (time.perf_counter() - t0) * 1e3
     resp.raise_for_status()
     data = resp.json()
@@ -137,12 +140,12 @@ def summarise(results: list[dict], total: int, duration_sec: float):
 
 # ── Triton (perf_analyzer) ────────────────────────────────────────────────────
 
-def generate_perf_input(image_b64: str, box: list[float]):
+def generate_perf_input(image_b64: str, bbox: list[float]):
     path = DATA_DIR / "perf_input.json"
     path.write_text(json.dumps({
         "data": [{
             "INPUT_IMAGE": {"content": [image_b64], "shape": [1]},
-            "BOX":         {"content": box,          "shape": [4]},
+            "BBOX":        {"content": bbox,         "shape": [4]},
         }]
     }))
 
@@ -180,7 +183,7 @@ if __name__ == "__main__":
 
     pairs     = load_manifest()
     image_b64 = encode_image(pairs[0]["image_path"])
-    box       = first_box(pairs[0]["annotation_path"])
+    bbox      = first_bbox(pairs[0]["annotation_path"])
 
     print(f"\n>>> Starting: {EXPERIMENT}")
     print("Waiting 10s for server to be ready...")
@@ -189,8 +192,8 @@ if __name__ == "__main__":
     if EXPERIMENT in FASTAPI_EXPERIMENTS:
         fn, runner = FASTAPI_EXPERIMENTS[EXPERIMENT]
         t0             = time.perf_counter()
-        results, total = runner(fn, image_b64, box)
+        results, total = runner(fn, image_b64, bbox)
         summarise(results, total, time.perf_counter() - t0)
     else:
-        generate_perf_input(image_b64, box)
+        generate_perf_input(image_b64, bbox)
         run_perf_analyzer(TRITON_EXPERIMENTS[EXPERIMENT])

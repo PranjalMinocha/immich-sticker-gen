@@ -5,8 +5,8 @@ BACKEND=onnx (default)      onnxruntime-gpu with encoder + decoder ONNX
 BACKEND=pytorch             PyTorch, direct encoder/decoder calls (thread-safe)
 
 POST /predict
-  Input:  { "image": "<base64>", "box": [x1,y1,x2,y2] }
-       OR { "image": "<base64>", "point": [x, y] }
+  Input:  { "image": "<base64>", "bbox": [x, y, w, h] }
+       OR { "image": "<base64>", "point_coords": [[x, y]] }
   Output: { "mask": "<base64 png>", "inference_ms": float, "encoder_ms": float, "decoder_ms": float }
 """
 from __future__ import annotations
@@ -44,9 +44,9 @@ app = FastAPI(title=f"MobileSAM API ({BACKEND})")
 
 
 class PredictRequest(BaseModel):
-    image: str
-    box:   list[float] | None = None
-    point: list[float] | None = None
+    image:        str
+    bbox:         list[float]       | None = None  # [x, y, w, h]
+    point_coords: list[list[float]] | None = None  # [[x, y]]
 
 
 class PredictResponse(BaseModel):
@@ -54,6 +54,7 @@ class PredictResponse(BaseModel):
     inference_ms: float
     encoder_ms:   float
     decoder_ms:   float
+    iou_score:    float | None = None
 
 
 def _preprocess(image_rgb: np.ndarray, size: int = 1024) -> np.ndarray:
@@ -75,19 +76,19 @@ def _infer_pytorch(image: np.ndarray, req: PredictRequest):
     encoder_ms = (time.perf_counter() - t0) * 1e3
 
     scale = 1024 / max(orig_h, orig_w)
-    if req.box:
-        x1, y1, x2, y2 = [c * scale for c in req.box]
-        coords = torch.tensor([[[x1,y1],[x2,y2]]], dtype=torch.float32, device=_device)
-        labels = torch.tensor([[2, 3]],            dtype=torch.int,     device=_device)
+    if req.bbox:
+        x, y, w, h = [c * scale for c in req.bbox]
+        coords = torch.tensor([[[x, y], [x + w, y + h]]], dtype=torch.float32, device=_device)
+        labels = torch.tensor([[2, 3]],                   dtype=torch.int,     device=_device)
     else:
-        px, py = req.point[0] * scale, req.point[1] * scale
-        coords = torch.tensor([[[px, py]]],        dtype=torch.float32, device=_device)
-        labels = torch.tensor([[1]],               dtype=torch.int,     device=_device)
+        px, py = req.point_coords[0][0] * scale, req.point_coords[0][1] * scale
+        coords = torch.tensor([[[px, py]]],               dtype=torch.float32, device=_device)
+        labels = torch.tensor([[1]],                      dtype=torch.int,     device=_device)
 
     t0 = time.perf_counter()
     with torch.no_grad():
         sparse, dense = _sam.prompt_encoder(points=(coords, labels), boxes=None, masks=None)
-        masks, _ = _sam.mask_decoder(
+        masks, iou = _sam.mask_decoder(
             image_embeddings=embedding,
             image_pe=_sam.prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse,
@@ -95,7 +96,7 @@ def _infer_pytorch(image: np.ndarray, req: PredictRequest):
             multimask_output=False,
         )
     decoder_ms = (time.perf_counter() - t0) * 1e3
-    return (masks[0, 0] > _sam.mask_threshold).cpu().numpy(), encoder_ms, decoder_ms
+    return (masks[0, 0] > _sam.mask_threshold).cpu().numpy(), encoder_ms, decoder_ms, float(iou[0, 0])
 
 
 def _infer_onnx(image: np.ndarray, req: PredictRequest):
@@ -105,43 +106,44 @@ def _infer_onnx(image: np.ndarray, req: PredictRequest):
     encoder_ms = (time.perf_counter() - t0) * 1e3
 
     scale = 1024 / max(orig_h, orig_w)
-    if req.box:
-        x1, y1, x2, y2 = [c * scale for c in req.box]
-        point_coords = np.array([[[x1,y1],[x2,y2],[0,0],[0,0],[0,0]]], dtype=np.float32)
-        point_labels = np.array([[2, 3, -1, -1, -1]],                  dtype=np.float32)
+    if req.bbox:
+        x, y, w, h = [c * scale for c in req.bbox]
+        x1, y1, x2, y2 = x, y, x + w, y + h
+        point_coords = np.array([[[x1, y1], [x2, y2], [0, 0], [0, 0], [0, 0]]], dtype=np.float32)
+        point_labels = np.array([[2, 3, -1, -1, -1]],                            dtype=np.float32)
     else:
-        px, py = req.point[0] * scale, req.point[1] * scale
-        point_coords = np.array([[[px,py],[0,0],[0,0],[0,0],[0,0]]], dtype=np.float32)
-        point_labels = np.array([[1, -1, -1, -1, -1]],               dtype=np.float32)
+        px, py = req.point_coords[0][0] * scale, req.point_coords[0][1] * scale
+        point_coords = np.array([[[px, py], [0, 0], [0, 0], [0, 0], [0, 0]]], dtype=np.float32)
+        point_labels = np.array([[1, -1, -1, -1, -1]],                         dtype=np.float32)
 
     t0 = time.perf_counter()
-    masks, _, _ = _dec_sess.run(
+    masks, iou, _ = _dec_sess.run(
         ["masks", "iou_predictions", "low_res_masks"],
         {
             "image_embeddings": embedding,
             "point_coords":     point_coords,
             "point_labels":     point_labels,
-            "mask_input":       np.zeros((1,1,256,256), dtype=np.float32),
-            "has_mask_input":   np.array([0],           dtype=np.float32),
+            "mask_input":       np.zeros((1, 1, 256, 256), dtype=np.float32),
+            "has_mask_input":   np.array([0],              dtype=np.float32),
             "orig_im_size":     np.array([orig_h, orig_w], dtype=np.float32),
         },
     )
     decoder_ms = (time.perf_counter() - t0) * 1e3
-    return (masks[0, 0] > 0), encoder_ms, decoder_ms
+    return (masks[0, 0] > 0), encoder_ms, decoder_ms, float(iou[0, 0])
 
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-    if not req.box and not req.point:
-        raise HTTPException(status_code=422, detail="Provide either 'box' or 'point'")
+    if not req.bbox and not req.point_coords:
+        raise HTTPException(status_code=422, detail="Provide either 'bbox' or 'point_coords'")
 
     t_total = time.perf_counter()
     image = np.array(Image.open(io.BytesIO(base64.b64decode(req.image))).convert("RGB"))
 
     if BACKEND == "pytorch":
-        mask, encoder_ms, decoder_ms = _infer_pytorch(image, req)
+        mask, encoder_ms, decoder_ms, iou_score = _infer_pytorch(image, req)
     else:
-        mask, encoder_ms, decoder_ms = _infer_onnx(image, req)
+        mask, encoder_ms, decoder_ms, iou_score = _infer_onnx(image, req)
 
     buf = io.BytesIO()
     Image.fromarray(mask.astype(np.uint8) * 255).save(buf, format="PNG")
@@ -151,6 +153,7 @@ def predict(req: PredictRequest):
         inference_ms = (time.perf_counter() - t_total) * 1e3,
         encoder_ms   = encoder_ms,
         decoder_ms   = decoder_ms,
+        iou_score    = iou_score,
     )
 
 
