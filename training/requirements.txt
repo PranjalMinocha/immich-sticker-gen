@@ -9,3 +9,4 @@ psutil>=5.9.0
 pyrsmi>=1.0.0; sys_platform == "linux"
 pycocotools>=2.0.6
 ray[train]>=2.40.0
+pytest>=7.4.0
