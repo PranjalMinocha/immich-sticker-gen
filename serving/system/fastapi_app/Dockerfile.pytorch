@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir \
     Pillow==10.3.0 \
     pydantic==2.7.1 \
     timm==0.9.16 \
-    "ray[serve]" \
+    "ray[serve,train]" \
     boto3
 
 RUN pip install --no-cache-dir --no-deps \
