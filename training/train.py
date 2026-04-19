@@ -70,6 +70,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
+from mlflow.tracking import MlflowClient
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -86,6 +87,7 @@ from dataset_sa1b import (
 )
 from sam_utils import (
     build_sam_tiny,
+    mean_dice_from_logits,
     forward_sam_trainable,
     mean_iou_from_logits,
     merge_tinyvit_encoder_into_sam,
@@ -93,6 +95,7 @@ from sam_utils import (
     segmentation_loss,
     strip_module_prefix,
 )
+from offline_eval import OfflineEvalMetrics, OfflineEvalThresholds, evaluate_quality_gates
 from training_core import (
     encoder_distill_loss,
     evaluate_encoder,
@@ -221,6 +224,38 @@ def eval_sam_loader_mean_iou(
         logits, _ = forward_sam_trainable(sam, batch, multimask_output, device)
         tgt = torch.stack([b["low_res_mask_gt"] for b in batch], dim=0)
         tot += mean_iou_from_logits(logits, tgt) * len(batch)
+        n += len(batch)
+    return tot / max(n, 1)
+
+
+@torch.no_grad()
+def eval_sam_loader_mean_dice(
+    sam: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    multimask_output: bool,
+    max_batches: Optional[int] = None,
+    show_progress: bool = True,
+    desc: str = "SAM Dice",
+) -> float:
+    sam.eval()
+    tot = 0.0
+    n = 0
+    if max_batches is not None:
+        iterable = islice(loader, max_batches)
+        total = max_batches
+    else:
+        iterable = loader
+        total = len(loader) if hasattr(loader, "__len__") else None
+    bar = tqdm(iterable, desc=desc, total=total, disable=not show_progress, leave=False)
+    for batch in bar:
+        for b in batch:
+            b["image"] = b["image"].to(device, non_blocking=True)
+            b["boxes"] = b["boxes"].to(device, non_blocking=True)
+            b["low_res_mask_gt"] = b["low_res_mask_gt"].to(device, non_blocking=True)
+        logits, _ = forward_sam_trainable(sam, batch, multimask_output, device)
+        tgt = torch.stack([b["low_res_mask_gt"] for b in batch], dim=0)
+        tot += mean_dice_from_logits(logits, tgt) * len(batch)
         n += len(batch)
     return tot / max(n, 1)
 
@@ -358,6 +393,9 @@ def train_fn(config: Dict[str, Any]) -> None:
     cfg_path = config["cfg_path"]
     mobilesam_root = config["mobilesam_root"]
     log_to_mlflow = config.get("log_to_mlflow", True)
+    orchestrator_run_id = config.get("orchestrator_run_id")
+    output_json_path = config.get("output_json_path")
+    run_started_unix = int(time.time())
     
     data_cfg = cfg["data"]
     train_cfg = effective_train_cfg_for_eval(cfg["train"], data_cfg)
@@ -454,12 +492,18 @@ def train_fn(config: Dict[str, Any]) -> None:
         "tracking_uri", "http://127.0.0.1:5000"
     )
     experiment_name = mlflow_cfg.get("experiment_name", "immich-sticker-sam")
-    run_name = mlflow_cfg.get("run_name")
+    run_name = mlflow_cfg.get("run_name") or orchestrator_run_id
     
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
     
     if world_rank == 0:
+        result_payload: Dict[str, Any] = {
+            "status": "failed",
+            "metrics": {},
+            "qualityGate": {},
+            "mlflow": {},
+        }
         try:
             mlflow.start_run(run_name=run_name, log_system_metrics=True)
         except Exception as e:
@@ -467,6 +511,9 @@ def train_fn(config: Dict[str, Any]) -> None:
             if mlflow.active_run():
                 mlflow.end_run()
             mlflow.start_run(run_name=run_name, log_system_metrics=False)
+
+        if orchestrator_run_id:
+            mlflow.set_tag("immich_sticker_training_run_id", orchestrator_run_id)
         
         sha = git_sha(_repo_root())
         flat_params: Dict[str, str] = {}
@@ -508,35 +555,126 @@ def train_fn(config: Dict[str, Any]) -> None:
         log_to_mlflow=log_to_mlflow,
     )
 
-    if world_rank == 0 and sam_test is not None and log_to_mlflow:
+    if world_rank == 0:
+        offline_eval_cfg = cfg.get("offline_eval", {})
+        max_eval_batches = resolve_eval_max_batches(train_cfg, sam_test)
+
         test_iou = eval_sam_loader_mean_iou(
             sam,
             sam_test,
             device,
             multimask,
-            max_batches=resolve_eval_max_batches(train_cfg, sam_test),
+            max_batches=max_eval_batches,
             show_progress=show_tqdm,
             desc="SAM test IoU",
         )
-        mlflow.log_metric("test_mean_iou_lowres", test_iou)
+        test_dice = eval_sam_loader_mean_dice(
+            sam,
+            sam_test,
+            device,
+            multimask,
+            max_batches=max_eval_batches,
+            show_progress=show_tqdm,
+            desc="SAM test Dice",
+        )
 
-    if world_rank == 0:
+        runtime_seconds = max(1, int(time.time()) - run_started_unix)
+        thresholds = OfflineEvalThresholds(
+            min_dice=float(offline_eval_cfg.get("min_dice", 0.8)),
+            min_iou=float(offline_eval_cfg.get("min_iou", 0.7)),
+            max_runtime_seconds=int(offline_eval_cfg.get("max_runtime_seconds", 14_400)),
+        )
+        metrics = OfflineEvalMetrics(
+            dice=float(test_dice),
+            iou=float(test_iou),
+            runtime_seconds=runtime_seconds,
+        )
+        quality_gate = evaluate_quality_gates(metrics, thresholds)
+
+        if log_to_mlflow:
+            mlflow.log_metric("test_mean_iou_lowres", test_iou)
+            mlflow.log_metric("test_mean_dice_lowres", test_dice)
+            mlflow.log_metric("runtime_seconds", runtime_seconds)
+            mlflow.log_param("offline_eval_min_iou", thresholds.min_iou)
+            mlflow.log_param("offline_eval_min_dice", thresholds.min_dice)
+            mlflow.log_param("offline_eval_max_runtime_seconds", thresholds.max_runtime_seconds)
+
         full_path = output_dir / "mobile_sam_full.pt"
         save_sam_checkpoint(full_path, sam)
         mlflow.log_artifact(str(full_path), artifact_path="checkpoints")
-        print(f"Training completed. Run: http://129.114.27.60:8000", file=sys.stderr)
+
+        active_run = mlflow.active_run()
+        run_id = active_run.info.run_id if active_run else None
+        result_payload = {
+            "status": "passed" if quality_gate["passed"] else "failed",
+            "metrics": {
+                "dice": round(test_dice, 6),
+                "iou": round(test_iou, 6),
+                "runtimeSeconds": runtime_seconds,
+            },
+            "qualityGate": {
+                **quality_gate,
+                "expectedMinDice": thresholds.min_dice,
+                "expectedMinIou": thresholds.min_iou,
+                "expectedMaxRuntimeSeconds": thresholds.max_runtime_seconds,
+            },
+            "mlflow": {
+                "trackingUri": tracking_uri,
+                "runId": run_id,
+            },
+        }
+
+        registry_cfg = cfg.get("model_registry", {})
+        register_enabled = bool(registry_cfg.get("enabled", True))
+        if register_enabled and quality_gate["passed"] and run_id:
+            model_name = str(registry_cfg.get("model_name", "immich-sticker-mobilesam"))
+            client = MlflowClient(tracking_uri=tracking_uri)
+            try:
+                client.get_registered_model(model_name)
+            except Exception:
+                client.create_registered_model(model_name)
+            model_uri = f"runs:/{run_id}/checkpoints/mobile_sam_full.pt"
+            mv = mlflow.register_model(model_uri=model_uri, name=model_name)
+            client.set_model_version_tag(model_name, str(mv.version), "quality_gate_passed", "true")
+            if orchestrator_run_id:
+                client.set_model_version_tag(model_name, str(mv.version), "immich_run_id", orchestrator_run_id)
+            result_payload["mlflow"]["modelName"] = model_name
+            result_payload["mlflow"]["modelVersion"] = str(mv.version)
+            result_payload["mlflow"]["registered"] = True
+        else:
+            result_payload["mlflow"]["registered"] = False
+
+        if output_json_path:
+            out_path = Path(output_json_path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(result_payload, indent=2), encoding="utf-8")
+
+        print("Training completed.", file=sys.stderr)
         mlflow.end_run()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ray Train MobileSAM training")
-    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--config", type=str, required=False, default=None)
     parser.add_argument("--num-workers", type=int, default=2, help="Number of Ray workers (GPUs)")
+    parser.add_argument("--sample-window-size", type=int, default=None)
+    parser.add_argument("--run-id", type=str, default=None)
+    parser.add_argument("--output-json", type=str, default=None)
     args = parser.parse_args()
 
-    cfg_path = Path(args.config).resolve()
+    config_path = args.config or os.environ.get("IMMICH_STICKER_TRAINING_CONFIG")
+    if not config_path:
+        raise ValueError("Config file is required. Use --config or IMMICH_STICKER_TRAINING_CONFIG.")
+
+    cfg_path = Path(config_path).resolve()
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    if args.sample_window_size is not None:
+        cfg.setdefault("data", {})["sample_window_size"] = int(args.sample_window_size)
+
+    if args.output_json:
+        cfg.setdefault("output", {})["result_json_path"] = str(args.output_json)
 
     train_top = cfg.get("training", {})
     mode = train_top.get("mode", "full_sam")
@@ -564,6 +702,8 @@ def main() -> None:
         "cfg_path": str(cfg_path),
         "mobilesam_root": str(mobilesam_root),
         "log_to_mlflow": True,
+        "orchestrator_run_id": args.run_id,
+        "output_json_path": args.output_json,
     }
 
     scaling_config = ScalingConfig(

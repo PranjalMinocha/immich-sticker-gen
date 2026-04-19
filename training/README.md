@@ -23,6 +23,7 @@ Training is controlled by **two YAML switches** (see below): **`training.mode`**
 | [`Dockerfile`](Dockerfile) | ROCm 6.0 training image — build from **repository root** |
 | [`setup_host.sh`](setup_host.sh) | Chameleon host: rclone, **sync** `Raw-Data` + `Teacher-Embeddings` to local disk, extract sample tarball, optional mount |
 | [`configs/chameleon_docker.yaml`](configs/chameleon_docker.yaml) | Docker paths when data is mounted at `/data` |
+| [`configs/chameleon_nvidia.yaml`](configs/chameleon_nvidia.yaml) | NVIDIA bare-metal preset for Chameleon (Quadro RTX 6000) |
 
 **TinyViT import path:** set `mobilesam_root` in YAML, or env `MOBILESAM_ROOT` / `IMMICH_MS_ROOT`, or clone [MobileSAM-pytorch](https://github.com/ChaoningZhang/MobileSAM-pytorch) so `../MobileSAM-pytorch/MobileSAM` exists next to this repo.
 
@@ -61,7 +62,10 @@ Training uses **Ray Train** for distributed multi-GPU training. Use `--num-worke
 
 ## 1. Set up a training instance (Chameleon)
 
-These steps assume a **GPU bare-metal** node (e.g. ROCm image at CHI@TACC) and that **large data** lives in **team object storage**, not only on local disk.
+These steps assume a **GPU instance on Chameleon** and that **large data** lives in **team object storage**, not only on local disk.
+
+- For **AMD/ROCm** nodes, use the ROCm-oriented container flow below.
+- For **NVIDIA Quadro RTX 6000 (24 GB VRAM)**, use the NVIDIA bare-metal flow below (recommended for now in this repo).
 
 ### 1.1 Bring up the node
 
@@ -129,10 +133,21 @@ Set **`MOBILESAM_ROOT`** to `~/MobileSAM-pytorch/MobileSAM` (or pass `mobilesam_
 Point every run at the **team tracking server** (replace with your URI):
 
 ```bash
-export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
+export MLFLOW_TRACKING_URI=http://129.114.27.60:8000
 ```
 
 **Metrics in the UI:** Runs use **`log_system_metrics=True`** for **System metrics**. **Model metrics** include loss, IoU, **`gpu_torch_memory_allocated_mib`** (always on ROCm GPU), plus **`gpu_utilization_percent`** when **pyrsmi** or **`rocm-smi`** works—check **`gpu_util_init_detail`** if utilization is missing. If a run **stops before the first training log**, you may only see system samples and no loss curves yet.
+
+### 1.6 NVIDIA sanity checks (Quadro RTX 6000)
+
+If your instance is NVIDIA, run:
+
+```bash
+nvidia-smi
+python3 -c "import torch; print('cuda_available=', torch.cuda.is_available(), 'device_count=', torch.cuda.device_count())"
+```
+
+Expected: the GPU appears in `nvidia-smi` and `cuda_available=True`.
 
 ---
 
@@ -170,17 +185,44 @@ All hyperparameters and paths should come from **one YAML file** per run (no one
 cd ~/immich-sticker-gen
 git pull
 pip install -r training/requirements.txt
-# PyTorch ROCm example:
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.0
+# NVIDIA CUDA example (Quadro RTX 6000):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 export MOBILESAM_ROOT=~/MobileSAM-pytorch/MobileSAM
-export MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000
+export MLFLOW_TRACKING_URI=http://129.114.27.60:8000
 
 cd training
 python3 train.py --config /path/to/run.yaml
 ```
 
-### 3.2 Docker (ROCm) — matches graded “train in container” flow
+Immich queue invocation format is also supported:
+
+```bash
+python3 train.py \
+  --config /path/to/run.yaml \
+  --sample-window-size 5000 \
+  --run-id <immich-run-id> \
+  --output-json /tmp/sticker_training_result.json
+```
+
+### 3.2 NVIDIA (Quadro RTX 6000) recommended path
+
+Use bare-metal Python for now. The committed Dockerfile in this repo is ROCm-oriented.
+
+Minimal smoke command for NVIDIA:
+
+```bash
+cd ~/immich-sticker-gen/training
+python3 train.py --config /path/to/run.yaml --num-workers 1 --output-json /tmp/sticker_training_result.json --run-id smoke-nvidia
+```
+
+Suggested config starter for NVIDIA:
+
+```bash
+cp training/configs/chameleon_nvidia.yaml ~/training_out/run_nvidia.yaml
+```
+
+### 3.3 Docker (ROCm) — matches graded “train in container” flow
 
 Build from **repository root** with **BuildKit** so **rebuilds** reuse cached layers (especially PyTorch) when only parts of the repo change:
 
@@ -201,7 +243,7 @@ docker run --rm \
   -v "$DATA_ROOT:/data:ro" \
   -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
   -v ~/training_out:/out \
-  -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
+  -e MLFLOW_TRACKING_URI=http://129.114.27.60:8000 \
   -e MOBILESAM_ROOT=/mobilesam \
   immich-sticker-train:rocm \
   python3 train.py --config /out/run.yaml --num-workers 2
@@ -211,7 +253,25 @@ Copy and edit **`training/configs/chameleon_docker.yaml`** into `/out/run.yaml` 
 
 **Multi-GPU training:** Use `--num-workers N` to train on N GPUs (default: 2). The script uses Ray Train for distributed training.
 
-### 3.3 Hyperparameter tuning (Ray Tune)
+Immich queue invocation format is also supported:
+
+```bash
+python3 train.py \
+  --config /out/run.yaml \
+  --sample-window-size 5000 \
+  --run-id <immich-run-id> \
+  --output-json /out/sticker_training_result.json
+```
+
+### Offline quality gate and Model Registry
+
+- `train.py` computes offline metrics on the held-out test split: `dice`, `iou`, `runtimeSeconds`.
+- Thresholds come from YAML under `offline_eval` (`min_dice`, `min_iou`, `max_runtime_seconds`).
+- Run output is written to JSON (from `--output-json`) so Immich can evaluate/persist run status.
+- MLflow Model Registry registration is conditional on all gates passing.
+- Registry config is under `model_registry` (`enabled`, `model_name`).
+
+### 3.4 Hyperparameter tuning (Ray Tune)
 
 For hyperparameter tuning, use `tune_train.py` instead of `train.py`:
 
@@ -223,7 +283,7 @@ docker run --rm \
   -v "$DATA_ROOT:/data:ro" \
   -v ~/MobileSAM-pytorch/MobileSAM:/mobilesam:ro \
   -v ~/training_out:/out \
-  -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:8000 \
+  -e MLFLOW_TRACKING_URI=http://129.114.27.60:8000 \
   -e MOBILESAM_ROOT=/mobilesam \
   immich-sticker-train:rocm \
   python3 tune_train.py --config /out/run.yaml --num-trials 4 --epochs 1
@@ -281,3 +341,62 @@ Depends on **dataset size** (for `full_sam`, **annotation instance** count), **e
 - Log **params**, **quality metrics**, **cost metrics** (time/epoch, total time), and **environment** (GPU/torch) each run.
 
 For project-wide context and Immich integration, see the [root README](../README.md).
+
+---
+
+## 7. Commands to validate phase-2 integration
+
+### 7.1 Training repo checks
+
+```bash
+cd ~/immich-sticker-gen/training
+
+# syntax check
+python3 -m compileall offline_eval.py train.py sam_utils.py
+
+# offline gate unit test
+pytest -q test_offline_eval.py
+```
+
+### 7.2 Training smoke run (writes JSON contract)
+
+```bash
+cd ~/immich-sticker-gen/training
+export MOBILESAM_ROOT=~/MobileSAM-pytorch/MobileSAM
+export MLFLOW_TRACKING_URI=http://129.114.27.60:8000
+
+python3 train.py \
+  --config /path/to/run.yaml \
+  --num-workers 1 \
+  --run-id smoke-phase2 \
+  --sample-window-size 5000 \
+  --output-json /tmp/sticker_training_result.json
+```
+
+Verify:
+- JSON exists at `/tmp/sticker_training_result.json` with `metrics.dice`, `metrics.iou`, `metrics.runtimeSeconds`, `qualityGate.*`.
+- MLflow run is visible at `http://129.114.27.60:8000`.
+
+### 7.3 Immich server tests for training integration
+
+```bash
+cd ~/immich/server
+npm install
+npm run test -- sticker-training.service.spec.ts system-config.service.spec.ts
+```
+
+### 7.4 End-to-end config fields to set in Immich
+
+Set `machineLearning.stickerTraining` in Immich config with:
+
+- `enabled: true`
+- `retrainThreshold: 5000`
+- `sampleWindowSize: 5000`
+- `pythonExecutable`
+- `trainingScriptPath` (points to `train.py`)
+- `trainingConfigPath` (points to YAML)
+- `trainingWorkingDirectory`
+- `resultJsonPath`
+- `qualityGate.minDiceScore`
+- `qualityGate.minIouScore`
+- `qualityGate.maxRuntimeSeconds`

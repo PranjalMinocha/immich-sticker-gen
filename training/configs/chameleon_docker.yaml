@@ -50,9 +50,18 @@ train:
   # sam_instance_frac: 0.05
 
 mlflow:
-  tracking_uri: http://127.0.0.1:5000
+  tracking_uri: http://129.114.27.60:8000
   experiment_name: immich-sticker-encoder
   run_name: null
+
+model_registry:
+  enabled: true
+  model_name: immich-sticker-mobilesam
+
+offline_eval:
+  min_dice: 0.8
+  min_iou: 0.7
+  max_runtime_seconds: 14400
 
 output:
   dir: /out

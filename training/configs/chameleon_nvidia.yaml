@@ -1,0 +1,49 @@
+# Chameleon NVIDIA preset (e.g., Quadro RTX 6000, 24 GB VRAM)
+# Use this for bare-metal Python runs on NVIDIA instances.
+
+training:
+  mode: full_sam
+  use_pretrained: true
+  pretrained_checkpoint_path: /home/cc/training_artifacts/mobile_sam.pt
+
+mobilesam_root: /home/cc/MobileSAM-pytorch/MobileSAM
+
+data:
+  data_dir: /home/cc/training-data/Raw-Data/extracted
+  embeddings_dir: /home/cc/training-data/Teacher-Embeddings/sa_000000
+  image_size: 1024
+  seed: 42
+  train_frac: 0.7
+  val_frac: 0.1
+  test_frac: 0.2
+  split_manifest: null
+  num_workers: 4
+
+train:
+  epochs: 8
+  batch_size: 2
+  optimizer: adamw
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  momentum: 0.9
+  scheduler_gamma: 0.9
+  log_interval_batches: 50
+  show_progress: true
+  sam_instance_frac: 0.05
+
+mlflow:
+  tracking_uri: http://129.114.27.60:8000
+  experiment_name: immich-sticker-sam
+  run_name: null
+
+model_registry:
+  enabled: true
+  model_name: immich-sticker-mobilesam
+
+offline_eval:
+  min_dice: 0.8
+  min_iou: 0.7
+  max_runtime_seconds: 14400
+
+output:
+  dir: /home/cc/training_out

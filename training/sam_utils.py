@@ -116,6 +116,19 @@ def mean_iou_from_logits(
     return float((inter / union).mean().item())
 
 
+@torch.no_grad()
+def mean_dice_from_logits(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    threshold: float = 0.0,
+) -> float:
+    pred = (logits > threshold).float()
+    t = (targets > 0.5).float()
+    inter = (pred * t).sum(dim=(1, 2, 3))
+    denom = pred.sum(dim=(1, 2, 3)) + t.sum(dim=(1, 2, 3)) + 1e-6
+    return float(((2.0 * inter) / denom).mean().item())
+
+
 def strip_module_prefix(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     out = {}
     for k, v in state.items():
