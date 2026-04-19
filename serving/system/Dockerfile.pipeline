@@ -2,13 +2,15 @@
 FROM python:3.11-slim
 
 RUN pip install --no-cache-dir \
-    "ray[client,train,serve]" \
+    "ray[client,serve]" \
     boto3 \
     numpy \
     Pillow \
-    requests
+    requests \
+    pyyaml
 
 COPY pipeline.py /app/pipeline.py
+COPY serve_config.yaml /app/serve_config.yaml
 WORKDIR /app
 
 CMD ["python", "pipeline.py"]
