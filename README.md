@@ -15,10 +15,6 @@ Immich users often want quick, high-quality cutouts (“stickers”) from person
 | [`training/`](training/) | Training: `train.py`, `training_core.py`, YAML configs, Dockerfile, `setup_host.sh` |
 | [`serving/`](serving/) | Serving experiments and notebooks (separate from graded training script path) |
 
-## Training (quick pointer)
-
-All operational steps—Chameleon instance prep, object store mount, editing config, Docker vs bare-metal runs, MLflow—live in **[`training/README.md`](training/README.md)**.
-
 ## References
 
 - [Immich](https://github.com/immich-app/immich)
