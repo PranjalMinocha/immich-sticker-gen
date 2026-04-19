@@ -73,6 +73,10 @@ def train_with_config(config: dict, cfg: dict, cfg_path: Path) -> None:
     split_out = Path(cfg.get("output", {}).get("dir", "/tmp")) / "split_manifest.json"
     manifest_in = data_cfg.get("split_manifest")
     manifest_path = Path(manifest_in).resolve() if manifest_in else None
+    train_manifest_in = data_cfg.get("train_manifest_csv")
+    val_manifest_in = data_cfg.get("val_manifest_csv")
+    train_manifest_path = Path(train_manifest_in).resolve() if train_manifest_in else None
+    val_manifest_path = Path(val_manifest_in).resolve() if val_manifest_in else None
 
     _, _, _, _, _, jpg_splits = build_datasets(
         data_cfg=data_cfg,
@@ -82,6 +86,8 @@ def train_with_config(config: dict, cfg: dict, cfg_path: Path) -> None:
         val_frac=float(data_cfg.get("val_frac", 0.1)),
         test_frac=float(data_cfg.get("test_frac", 0.2)),
         split_manifest=manifest_path,
+        train_manifest_csv=train_manifest_path,
+        val_manifest_csv=val_manifest_path,
         split_manifest_out=split_out if manifest_path is None else None,
     )
 

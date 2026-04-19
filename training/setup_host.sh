@@ -31,7 +31,6 @@ IMAGES_DIR_NAME="${IMAGES_DIR_NAME:-images}"
 ANNOTATIONS_DIR_NAME="${ANNOTATIONS_DIR_NAME:-annotations}"
 TEACHER_EMBEDDINGS_DIR_NAME="${TEACHER_EMBEDDINGS_DIR_NAME:-Teacher-Embeddings}"
 EMBEDDINGS_SUBDIR="${EMBEDDINGS_SUBDIR:-sa_000000}"
-GENERATED_SPLIT_MANIFEST="${GENERATED_SPLIT_MANIFEST:-$LOCAL_DATA_ROOT/splits/split_manifest.json}"
 STRICT_CHECKS="${STRICT_CHECKS:-1}"
 
 case "$RCLONE_SYNC_ENABLED" in
@@ -115,18 +114,14 @@ if [[ ! -f "$VAL_MANIFEST_PATH" ]]; then
   exit 1
 fi
 
-mkdir -p "$(dirname "$GENERATED_SPLIT_MANIFEST")"
-
 OBJSTORE_DATA_ROOT="$OBJSTORE_DATA_ROOT" \
 TRAIN_MANIFEST_PATH="$TRAIN_MANIFEST_PATH" \
 VAL_MANIFEST_PATH="$VAL_MANIFEST_PATH" \
 TEACHER_EMBEDDINGS_DIR_NAME="$TEACHER_EMBEDDINGS_DIR_NAME" \
 EMBEDDINGS_SUBDIR="$EMBEDDINGS_SUBDIR" \
-GENERATED_SPLIT_MANIFEST="$GENERATED_SPLIT_MANIFEST" \
 STRICT_CHECKS="$STRICT_CHECKS" \
 python3 - <<'PY'
 import csv
-import json
 import os
 from pathlib import Path
 
@@ -135,7 +130,6 @@ train_csv = Path(os.environ["TRAIN_MANIFEST_PATH"]).resolve()
 val_csv = Path(os.environ["VAL_MANIFEST_PATH"]).resolve()
 emb_dir_name = os.environ["TEACHER_EMBEDDINGS_DIR_NAME"]
 emb_subdir = os.environ.get("EMBEDDINGS_SUBDIR", "")
-out_path = Path(os.environ["GENERATED_SPLIT_MANIFEST"]).resolve()
 strict = os.environ.get("STRICT_CHECKS", "1").lower() in {"1", "true", "yes"}
 
 emb_root = data_root / emb_dir_name
@@ -154,8 +148,8 @@ def s3_uri_to_local(uri: str) -> Path:
 
 
 def parse_manifest(path: Path):
-    entries = []
     missing = {"jpg": 0, "ann": 0, "npy": 0}
+    n_rows = 0
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         required = {"image_uri", "annotation_uri"}
@@ -167,6 +161,7 @@ def parse_manifest(path: Path):
             ann_uri = (row.get("annotation_uri") or "").strip()
             if not image_uri or not ann_uri:
                 continue
+            n_rows += 1
 
             jpg = s3_uri_to_local(image_uri)
             ann = s3_uri_to_local(ann_uri)
@@ -179,13 +174,11 @@ def parse_manifest(path: Path):
             if not npy.exists():
                 missing["npy"] += 1
 
-            entries.append({"jpg": str(jpg), "npy": str(npy)})
-    return entries, missing
+    return n_rows, missing
 
 
-train_entries, train_missing = parse_manifest(train_csv)
-val_entries, val_missing = parse_manifest(val_csv)
-test_entries = list(val_entries)
+train_rows, train_missing = parse_manifest(train_csv)
+val_rows, val_missing = parse_manifest(val_csv)
 
 missing_total = {
     "jpg": train_missing["jpg"] + val_missing["jpg"],
@@ -193,22 +186,7 @@ missing_total = {
     "npy": train_missing["npy"] + val_missing["npy"],
 }
 
-payload = {
-    "source": "dataset_manifests_csv",
-    "train_manifest_csv": str(train_csv),
-    "val_manifest_csv": str(val_csv),
-    "counts": {"train": len(train_entries), "val": len(val_entries), "test": len(test_entries)},
-    "missing": missing_total,
-    "train": train_entries,
-    "val": val_entries,
-    "test": test_entries,
-}
-
-out_path.parent.mkdir(parents=True, exist_ok=True)
-out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-print(f"Wrote split manifest: {out_path}")
-print(f"Counts: train={len(train_entries)} val={len(val_entries)} test={len(test_entries)}")
+print(f"Validated manifests: train_rows={train_rows} val_rows={val_rows} test_policy=val")
 print(f"Missing: jpg={missing_total['jpg']} ann={missing_total['ann']} npy={missing_total['npy']}")
 
 if strict and any(missing_total.values()):
@@ -220,10 +198,12 @@ if [[ -n "$EMBEDDINGS_SUBDIR" ]]; then
   EMB_PATH="${EMB_PATH}/${EMBEDDINGS_SUBDIR}"
 fi
 
-echo "Done. Manifest-based setup ready."
-echo "Use these YAML values:"
+echo "Done. CSV-manifest setup ready."
+echo "Use these YAML values (no split_manifest needed):"
 echo "  data.data_dir: ${OBJSTORE_DATA_ROOT}/${IMAGES_DIR_NAME}"
 echo "  data.annotation_root: ${OBJSTORE_DATA_ROOT}/${ANNOTATIONS_DIR_NAME}"
+echo "  data.objstore_local_root: ${OBJSTORE_DATA_ROOT}"
+echo "  data.train_manifest_csv: ${TRAIN_MANIFEST_PATH}"
+echo "  data.val_manifest_csv: ${VAL_MANIFEST_PATH}"
 echo "  data.embeddings_dir: ${EMB_PATH}"
-echo "  data.split_manifest: ${GENERATED_SPLIT_MANIFEST}"
 echo "Note: synthetic-data manifest is intentionally ignored."

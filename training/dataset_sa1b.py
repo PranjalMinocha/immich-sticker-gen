@@ -12,6 +12,7 @@ throughput depends on mount latency. Extract tar archives to a directory first â
 from __future__ import annotations
 
 import json
+import csv
 import random
 import sys
 from pathlib import Path
@@ -242,6 +243,62 @@ def load_split_manifest_pairs(path: Path) -> Tuple[List[Tuple[Path, Path]], List
         return out
 
     return des(data["train"]), des(data["val"]), des(data["test"])
+
+
+def _resolve_image_uri_to_local_path(image_uri: str, data_cfg: dict) -> Path:
+    raw = image_uri.strip()
+    if raw.startswith("s3://"):
+        local_root_raw = data_cfg.get("objstore_local_root")
+        if not local_root_raw:
+            raise ValueError(
+                "CSV manifest contains s3:// image_uri but data.objstore_local_root is not set."
+            )
+        parts = raw.split("/", 3)
+        if len(parts) < 4:
+            raise ValueError(f"Invalid s3 URI in manifest: {raw}")
+        key = parts[3]
+        return (Path(local_root_raw).expanduser().resolve() / key).resolve()
+    p = Path(raw).expanduser()
+    return p.resolve() if p.is_absolute() else (Path(data_cfg["data_dir"]).expanduser().resolve() / p).resolve()
+
+
+def load_csv_manifest_pairs(
+    train_manifest_csv: Path,
+    val_manifest_csv: Path,
+    data_cfg: dict,
+) -> Tuple[List[Tuple[Path, Path]], List[Tuple[Path, Path]], List[Tuple[Path, Path]]]:
+    embeddings_dir = Path(data_cfg["embeddings_dir"]).expanduser().resolve()
+
+    def parse_one(path: Path) -> List[Tuple[Path, Path]]:
+        out: List[Tuple[Path, Path]] = []
+        with path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                raise ValueError(f"CSV manifest has no header: {path}")
+            image_col = None
+            for cand in ("image_uri", "image_path", "jpg", "image"):
+                if cand in reader.fieldnames:
+                    image_col = cand
+                    break
+            if image_col is None:
+                raise ValueError(f"CSV manifest missing image column in {path}; expected one of image_uri/image_path/jpg/image")
+
+            for row in reader:
+                image_raw = (row.get(image_col) or "").strip()
+                if not image_raw:
+                    continue
+                jpg = _resolve_image_uri_to_local_path(image_raw, data_cfg)
+                npy = embeddings_dir / f"{jpg.stem}.npy"
+                out.append((jpg, npy))
+
+        if not out:
+            raise RuntimeError(f"No rows parsed from CSV manifest: {path}")
+        return out
+
+    train = parse_one(train_manifest_csv)
+    val = parse_one(val_manifest_csv)
+    test = list(val)
+    return train, val, test
 
 
 class ResizeLongestSide:
@@ -546,12 +603,28 @@ def build_datasets(
     val_frac: float,
     test_frac: float,
     split_manifest: Path | None,
+    train_manifest_csv: Path | None,
+    val_manifest_csv: Path | None,
     split_manifest_out: Path | None,
 ):
     all_pairs = collect_encoder_pairs(data_cfg)
     full = SA1BEncoderDataset(all_pairs, img_size=img_size)
 
-    if split_manifest is not None and split_manifest.is_file():
+    if train_manifest_csv is not None or val_manifest_csv is not None:
+        if train_manifest_csv is None or val_manifest_csv is None:
+            raise ValueError("Both data.train_manifest_csv and data.val_manifest_csv must be set together.")
+        if not train_manifest_csv.is_file():
+            raise FileNotFoundError(f"train manifest csv not found: {train_manifest_csv}")
+        if not val_manifest_csv.is_file():
+            raise FileNotFoundError(f"val manifest csv not found: {val_manifest_csv}")
+        train_p, val_p, test_p = load_csv_manifest_pairs(train_manifest_csv, val_manifest_csv, data_cfg)
+        meta = {
+            "source": "manifest_csv",
+            "train_manifest_csv": str(train_manifest_csv),
+            "val_manifest_csv": str(val_manifest_csv),
+            "test_policy": "test_equals_val",
+        }
+    elif split_manifest is not None and split_manifest.is_file():
         train_p, val_p, test_p = load_split_manifest_pairs(split_manifest)
         meta = {"source": "manifest", "path": str(split_manifest)}
     else:

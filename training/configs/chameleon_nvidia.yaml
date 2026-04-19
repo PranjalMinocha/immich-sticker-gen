@@ -12,13 +12,15 @@ data:
   # Container paths (mount object storage root at /data:ro).
   data_dir: /data/images
   annotation_root: /data/annotations
+  objstore_local_root: /data
+  train_manifest_csv: /data/dataset_manifests/train_manifest.csv
+  val_manifest_csv: /data/dataset_manifests/val_manifest.csv
   embeddings_dir: /data/Teacher-Embeddings/sa_000000
   image_size: 1024
   seed: 42
   train_frac: 0.7
   val_frac: 0.1
   test_frac: 0.2
-  split_manifest: /data/splits/split_manifest.json
   num_workers: 4
 
 train:
