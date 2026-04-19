@@ -1,0 +1,133 @@
+# serving/system/docker-compose.prod.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Ray cluster pipeline: train → eval → promote → serve
+#
+# Startup:
+#   docker compose -f docker-compose.prod.yml up ray-head ray-worker minio minio-init prometheus
+#
+# Run pipeline (train → eval → auto-promote → deploy to Ray Serve):
+#   docker compose -f docker-compose.prod.yml run --rm pipeline
+#
+# Endpoints:
+#   Ray Serve (predict/health)  http://localhost:8000
+#   Ray Dashboard               http://localhost:8265
+#   MinIO console               http://localhost:9001  (minioadmin / minioadmin)
+#   Prometheus                  http://localhost:9090
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+x-minio-env: &minio-env
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: minioadmin
+  MINIO_SECRET_KEY: minioadmin
+  MODEL_BUCKET: models
+
+services:
+  # ── MinIO: model store ────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/models &&
+        mc mb --ignore-existing local/data
+      "
+    restart: on-failure
+
+  # ── Ray cluster ───────────────────────────────────────────────────────────
+  # Both head and worker share the same image so MobileSAM + app code are
+  # available on every node where replicas may be scheduled.
+  ray-head:
+    <<: *gpu
+    build:
+      context: ..
+      dockerfile: system/fastapi_app/Dockerfile.pytorch
+    ports:
+      - "6379:6379"    # GCS
+      - "10001:10001"  # Ray client
+      - "8265:8265"    # Dashboard
+      - "8000:8000"    # Ray Serve HTTP
+      - "8080:8080"    # Prometheus metrics
+    command: >
+      ray start --head
+      --dashboard-host=0.0.0.0
+      --metrics-export-port=8080
+      --block
+    environment:
+      <<: *minio-env
+      RAY_SERVE_HTTP_HOST: "0.0.0.0"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ray; ray.init('ray://localhost:10001', ignore_reinit_error=True)"]
+      interval: 20s
+      timeout: 15s
+      retries: 10
+      start_period: 30s
+
+  ray-worker:
+    <<: *gpu
+    build:
+      context: ..
+      dockerfile: system/fastapi_app/Dockerfile.pytorch
+    depends_on:
+      ray-head:
+        condition: service_healthy
+    command: ray start --address=ray-head:6379 --block
+    environment:
+      <<: *minio-env
+
+  # ── Pipeline: train → eval → promote → deploy ─────────────────────────────
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    depends_on:
+      ray-head:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *minio-env
+      RAY_ADDRESS: ray://ray-head:10001
+      EVAL_THRESHOLD: "0.75"
+    restart: "no"
+
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - ray-head
+
+volumes:
+  minio_data:

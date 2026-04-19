@@ -1,0 +1,8 @@
+# serving/system/prometheus.yml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: ray
+    static_configs:
+      - targets: ["ray-head:8080"]
