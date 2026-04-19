@@ -1,0 +1,31 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    MLFLOW_ENABLE_SYSTEM_METRICS_LOGGING=true
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    python3-dev \
+    git \
+    ca-certificates \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --upgrade pip && \
+    pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+WORKDIR /app
+COPY training/requirements.txt /app/training/requirements.txt
+RUN pip3 install -r /app/training/requirements.txt
+
+COPY training /app/training
+WORKDIR /app/training
+
+ENV PYTHONPATH=/app/training
+
+CMD ["python3", "train.py", "--config", "configs/chameleon_nvidia.yaml"]

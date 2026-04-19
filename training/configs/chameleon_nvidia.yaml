@@ -9,16 +9,16 @@ training:
 mobilesam_root: /home/cc/MobileSAM-pytorch/MobileSAM
 
 data:
-  # Set these from setup_host.sh output for your mounted bucket.
-  data_dir: /tmp/rclone-tests/object/images
-  annotation_root: /tmp/rclone-tests/object/annotations
-  embeddings_dir: /tmp/rclone-tests/object/Teacher-Embeddings/sa_000000
+  # Container paths (mount object storage root at /data:ro).
+  data_dir: /data/images
+  annotation_root: /data/annotations
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
   image_size: 1024
   seed: 42
   train_frac: 0.7
   val_frac: 0.1
   test_frac: 0.2
-  split_manifest: /home/cc/training-data/splits/split_manifest.json
+  split_manifest: /data/splits/split_manifest.json
   num_workers: 4
 
 train:
@@ -48,7 +48,7 @@ offline_eval:
   max_runtime_seconds: 14400
 
 output:
-  dir: /home/cc/training_out
+  dir: /out
 
 # Immich orchestration contract (set via Immich system config):
 # - trainingScriptPath: /home/cc/immich-sticker-gen/training/train.py
