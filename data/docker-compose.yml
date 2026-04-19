@@ -73,5 +73,18 @@ services:
     depends_on:
       - postgres
 
+  # 10. RETRAINING TRIGGER (Threshold-based retrain orchestrator)
+  retraining-trigger:
+    build: .
+    env_file: .env
+    volumes:
+      - ./retraining_trigger.py:/app/retraining_trigger.py
+      - ./retraining_trigger_logic.py:/app/retraining_trigger_logic.py
+      - .:/app
+    profiles: ["batch"]
+    command: ["python", "retraining_trigger.py", "--dry-run"]
+    depends_on:
+      - postgres
+
 volumes:
   pg_data:

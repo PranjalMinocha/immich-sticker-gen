@@ -38,8 +38,16 @@ def safe_extract_tar(archive_path: str, extract_dir: str) -> None:
     base_dir = os.path.abspath(extract_dir)
     with tarfile.open(archive_path, "r:*") as archive:
         for member in archive.getmembers():
-            candidate = os.path.abspath(os.path.join(base_dir, member.name))
-            if not candidate.startswith(base_dir + os.sep):
+            name = member.name.strip()
+            # Common harmless root markers in tar archives
+            if name in ("", ".", "./"):
+                continue
+            # Reject absolute tar paths
+            if os.path.isabs(name):
+                raise ValueError(f"Unsafe absolute tar member path detected: {member.name}")
+            candidate = os.path.abspath(os.path.join(base_dir, name))
+            # Robust traversal protection
+            if os.path.commonpath([base_dir, candidate]) != base_dir:
                 raise ValueError(f"Unsafe tar member path detected: {member.name}")
         archive.extractall(path=extract_dir)
 
