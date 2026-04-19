@@ -2,21 +2,23 @@
 # data_dir = JPEGs (+ optional mask JSON). embeddings_dir = teacher .npy (same basename as each .jpg).
 
 training:
-  mode: encoder_distill
+  mode: full_sam
   use_pretrained: true
   pretrained_checkpoint_path: /path/to/mobile_sam.pt
 
 mobilesam_root: null
 
 data:
-  data_dir: /data/Raw-Data/extracted
+  # New mounted-bucket layout
+  data_dir: /data/images
+  annotation_root: /data/annotations
   embeddings_dir: /data/Teacher-Embeddings/sa_000000
   image_size: 1024
   seed: 42
   train_frac: 0.7
   val_frac: 0.1
   test_frac: 0.2
-  split_manifest: null
+  split_manifest: /data/splits/split_manifest.json
   num_workers: 4
 
 model:
