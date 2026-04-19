@@ -1,7 +1,5 @@
 # Training (Docker Only)
 
-Training and tests run only in containers.
-
 ## 1) Build image
 
 From repo root:
@@ -36,18 +34,6 @@ Training now reads CSV manifests directly:
 
 - `data.train_manifest_csv`
 - `data.val_manifest_csv`
-
-`test` split is derived from `val` for offline evaluation.
-
-For your current bucket layout, this is the exact example:
-
-```bash
-cd ~/immich-sticker-gen
-OBJSTORE_DATA_ROOT=/tmp/rclone-tests/object \
-EMBEDDINGS_SUBDIR=sa_000000 \
-STRICT_CHECKS=1 \
-bash training/setup_host.sh
-```
 
 If you want to retrain on a new dataset, swap/update only `dataset_manifests/train_manifest.csv` and rerun the same command.
 
