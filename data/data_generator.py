@@ -13,6 +13,7 @@ from PIL import Image
 API_BASE_URL = "http://dummy-api:8000"
 
 ACTIVE_USERS = []
+_used_uploads: dict[str, set[str]] = {}  # user_id → set of jpg_paths already uploaded
 
 # --- Chameleon S3 Setup ---
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
@@ -317,13 +318,24 @@ if __name__ == "__main__":
     print("Starting Deep-Data Synthetic Generator...")
     time.sleep(5) # Wait for DB and API to boot
     ACTIVE_USERS = load_synthetic_users()
-    
+
     pairs = get_image_json_pairs()
     print(f"Found {len(pairs)} image/annotation pairs in the reservoir.")
-    
+
     # Loop through the files indefinitely to keep generating traffic
     while True:
-        random.shuffle(pairs) # Shuffle so traffic looks organic
-        for jpg_path, json_path in pairs:
-            process_file_pair(jpg_path, json_path)
-            time.sleep(random.uniform(1.0, 4.0)) # Wait before next user
+        user = random.choice(ACTIVE_USERS)
+        user_id = user["user_id"]
+        used = _used_uploads.setdefault(user_id, set())
+
+        # Find a pair this user hasn't uploaded yet.
+        candidates = [(j, a) for j, a in pairs if j not in used]
+        if not candidates:
+            # User has exhausted the whole reservoir; reset their history.
+            used.clear()
+            candidates = list(pairs)
+
+        jpg_path, json_path = random.choice(candidates)
+        used.add(jpg_path)
+        process_file_pair(jpg_path, json_path)
+        time.sleep(random.uniform(1.0, 4.0))
