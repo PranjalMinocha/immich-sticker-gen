@@ -135,3 +135,6 @@ class StickerGenModel:
     @app.get("/health")
     def health(self):
         return {"status": "ok"}
+
+
+sticker_gen_app = StickerGenModel.bind()

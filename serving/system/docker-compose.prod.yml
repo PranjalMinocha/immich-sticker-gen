@@ -85,9 +85,9 @@ services:
       <<: *minio-env
       RAY_SERVE_HTTP_HOST: "0.0.0.0"
     healthcheck:
-      test: ["CMD", "python", "-c", "import ray; ray.init('ray://localhost:10001', ignore_reinit_error=True)"]
+      test: ["CMD", "curl", "-f", "http://localhost:8265"]
       interval: 20s
-      timeout: 15s
+      timeout: 10s
       retries: 10
       start_period: 30s
 

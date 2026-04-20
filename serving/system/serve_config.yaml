@@ -6,7 +6,7 @@
 applications:
   - name: immich-sticker-gen
     route_prefix: /
-    import_path: fastapi_app.app:StickerGenModel
+    import_path: fastapi_app.app:sticker_gen_app
     deployments:
       - name: StickerGenModel
         num_replicas: 1
