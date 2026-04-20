@@ -378,8 +378,9 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
     checksum = hashlib.sha1(file_bytes).digest()
     device_asset_id = uuid.uuid4().hex
     device_id = "synthetic-generator"
-    now = time.strftime("%Y%m%dT%H%M%S")
-    object_key = f"user_uploads/{user_id}/{now}_{file.filename}"
+    asset_uuid = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1] or ".jpg"
+    object_key = f"upload/{user_id}/{asset_uuid[:2]}/{asset_uuid[2:4]}/{asset_uuid}{ext}"
 
     s3.put_object(Bucket=RAW_BUCKET, Key=object_key, Body=file_bytes)
 
@@ -393,11 +394,11 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
         cur.execute(
             '''
             INSERT INTO "asset"
-            ("deviceAssetId", "deviceId", "ownerId", "type", "originalPath", "fileCreatedAt", "fileModifiedAt", "checksum", "checksumAlgorithm", "originalFileName", "localDateTime", "visibility", "libraryId", "livePhotoVideoId", "isExternal")
-            VALUES (%s, %s, %s, %s, %s, now(), now(), %s, %s, %s, now(), %s, NULL, NULL, false)
+            ("id", "deviceAssetId", "deviceId", "ownerId", "type", "originalPath", "fileCreatedAt", "fileModifiedAt", "checksum", "checksumAlgorithm", "originalFileName", "localDateTime", "visibility", "libraryId", "livePhotoVideoId", "isExternal")
+            VALUES (%s, %s, %s, %s, %s, %s, now(), now(), %s, %s, %s, now(), %s, NULL, NULL, false)
             RETURNING "id";
             ''',
-            (device_asset_id, device_id, user_id, "IMAGE", object_key, Binary(checksum), "sha1", file.filename, "timeline"),
+            (asset_uuid, device_asset_id, device_id, user_id, "IMAGE", object_key, Binary(checksum), "sha1", file.filename, "timeline"),
         )
         asset_id = cur.fetchone()["id"]
     except UniqueViolation:
