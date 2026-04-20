@@ -28,6 +28,12 @@ CREATE TABLE sticker_generations (
     saved BOOLEAN DEFAULT FALSE,
     num_tries INTEGER DEFAULT 1,
     edited_pixels INTEGER DEFAULT 0,
+    quality_status VARCHAR(16) DEFAULT 'pending',
+    quality_checked_at TIMESTAMP,
+    quality_check_version INTEGER DEFAULT 1,
+    quality_fail_reasons_json TEXT,
     used_for_training BOOLEAN DEFAULT FALSE,
+    used_for_training_at TIMESTAMP,
+    retrain_run_id VARCHAR(64),
     generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
