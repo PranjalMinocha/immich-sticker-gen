@@ -376,6 +376,13 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
     file_bytes = await file.read()
     file_size = len(file_bytes)
     checksum = hashlib.sha1(file_bytes).digest()
+    device_asset_id = uuid.uuid4().hex
+    device_id = "synthetic-generator"
+    asset_uuid = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1] or ".jpg"
+    object_key = f"upload/{user_id}/{asset_uuid[:2]}/{asset_uuid[2:4]}/{asset_uuid}{ext}"
+
+    s3.put_object(Bucket=RAW_BUCKET, Key=object_key, Body=file_bytes)
 
     conn = get_db_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -383,19 +390,6 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
         cur.execute('SELECT "id" FROM "user" WHERE "id" = %s LIMIT 1;', (user_id,))
         if cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="User not found")
-
-        cur.execute('SELECT "id" FROM "asset" WHERE "ownerId" = %s AND "checksum" = %s LIMIT 1;', (user_id, Binary(checksum)))
-        existing = cur.fetchone()
-        if existing:
-            return {"asset_id": existing["id"], "image_id": existing["id"], "status": "duplicate", "s3_object_key": None}
-
-        device_asset_id = uuid.uuid4().hex
-        device_id = "synthetic-generator"
-        asset_uuid = str(uuid.uuid4())
-        ext = os.path.splitext(file.filename)[1] or ".jpg"
-        object_key = f"upload/{user_id}/{asset_uuid[:2]}/{asset_uuid[2:4]}/{asset_uuid}{ext}"
-
-        s3.put_object(Bucket=RAW_BUCKET, Key=object_key, Body=file_bytes)
 
         cur.execute(
             '''
@@ -407,6 +401,13 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
             (asset_uuid, device_asset_id, device_id, user_id, "IMAGE", object_key, Binary(checksum), "sha1", file.filename, "timeline"),
         )
         asset_id = cur.fetchone()["id"]
+    except UniqueViolation:
+        conn.rollback()
+        cur.execute('SELECT "id" FROM "asset" WHERE "ownerId" = %s AND "checksum" = %s LIMIT 1;', (user_id, Binary(checksum)))
+        row = cur.fetchone()
+        if not row:
+            raise
+        asset_id = row["id"]
     except Exception:
         conn.rollback()
         STICKER_API_ERRORS.labels(endpoint="upload").inc()
