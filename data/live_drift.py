@@ -101,6 +101,16 @@ def download_detector_artifact(s3_client: Any, bucket: str, key: str, cache_root
 
     s3_client.download_file(bucket, key, archive_path)
     with tarfile.open(archive_path, mode="r:gz") as archive:
+        base_dir = os.path.abspath(cache_root)
+        for member in archive.getmembers():
+            name = member.name.strip()
+            if name in ("", ".", "./"):
+                continue
+            if os.path.isabs(name):
+                raise ValueError(f"Unsafe absolute tar member path detected: {member.name}")
+            candidate = os.path.abspath(os.path.join(base_dir, name))
+            if os.path.commonpath([base_dir, candidate]) != base_dir:
+                raise ValueError(f"Unsafe tar member path detected: {member.name}")
         archive.extractall(path=cache_root)
     os.remove(archive_path)
 

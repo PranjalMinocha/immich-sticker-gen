@@ -112,3 +112,16 @@ Required Immich config (`machineLearning.stickerTraining`):
 
 - NVIDIA: `training/configs/chameleon_nvidia.yaml`
 - ROCm: `training/configs/chameleon_docker.yaml`
+
+## 7) Retraining test harness (docker-only)
+
+Training-team validation scripts:
+
+- `training/run_retraining_smoke_docker.sh`
+- `training/run_retraining_quality_gate_fail_docker.sh`
+- `training/run_retraining_docker_job.sh`
+- `training/build_eval_subsets.py`
+- `training/verify_retraining_result.py`
+- `training/RETRAINING_TESTING.md`
+
+These scripts validate output JSON contract, MLflow run integrity, and model-registry behavior for both pass and fail paths.

@@ -1,0 +1,42 @@
+training:
+  mode: full_sam
+  use_pretrained: false
+  pretrained_checkpoint_path: /home/cc/training_artifacts/mobile_sam.pt
+mobilesam_root: /home/cc/MobileSAM-pytorch/MobileSAM
+data:
+  data_dir: /data/images
+  annotation_root: /data/annotations
+  objstore_local_root: /data
+  train_manifest_csv: /data/retraining_runs/e2e-smoke-20260420T144234Z/dataset_manifests/train_manifest.csv
+  val_manifest_csv: /data/retraining_runs/e2e-smoke-20260420T144234Z/dataset_manifests/val_manifest.csv
+  embeddings_dir: /data/Teacher-Embeddings/sa_000000
+  image_size: 1024
+  seed: 42
+  train_frac: 0.9
+  val_frac: 0.1
+  test_frac: 0.0
+  num_workers: 2
+train:
+  epochs: 2
+  batch_size: 2
+  optimizer: adamw
+  learning_rate: 1.0e-05
+  weight_decay: 0.01
+  momentum: 0.9
+  scheduler_gamma: 0.95
+  log_interval_batches: 25
+  show_progress: true
+  sam_instance_frac: 1.0
+mlflow:
+  tracking_uri: http://129.114.27.60:8000
+  experiment_name: immich-sticker-retraining
+  run_name: null
+model_registry:
+  enabled: true
+  model_name: immich-sticker-mobilesam
+offline_eval:
+  min_dice: 0.75
+  min_iou: 0.65
+  max_runtime_seconds: 10800
+output:
+  dir: /out

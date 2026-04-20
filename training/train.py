@@ -54,6 +54,7 @@ warnings.filterwarnings("ignore")
 import logging
 
 import argparse
+import csv
 import json
 import math
 import re
@@ -69,6 +70,7 @@ import mlflow
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 from mlflow.tracking import MlflowClient
 from torch.utils.data import DataLoader
@@ -80,6 +82,11 @@ from ray.train.torch import TorchTrainer
 from ray.train import ScalingConfig, RunConfig
 
 from dataset_sa1b import (
+    ResizeLongestSide,
+    _annotations_list_from_json,
+    _box_xyxy_resized_from_ann_or_mask,
+    _resolve_image_uri_to_local_path,
+    mask_from_ann_segmentation,
     SAM_ENCODER_PAD_SIDE,
     SA1BSamDataset,
     build_datasets,
@@ -258,6 +265,268 @@ def eval_sam_loader_mean_dice(
         tot += mean_dice_from_logits(logits, tgt) * len(batch)
         n += len(batch)
     return tot / max(n, 1)
+
+
+@torch.no_grad()
+def mean_boundary_f1_from_logits(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    threshold: float = 0.0,
+    eps: float = 1e-6,
+) -> float:
+    pred = (logits > threshold).float()
+    tgt = (targets > 0.5).float()
+
+    pred_edge = torch.abs(pred[:, :, 1:, :] - pred[:, :, :-1, :])
+    pred_edge = F.pad(pred_edge, (0, 0, 1, 0))
+    pred_edge_h = torch.abs(pred[:, :, :, 1:] - pred[:, :, :, :-1])
+    pred_edge_h = F.pad(pred_edge_h, (1, 0, 0, 0))
+    pred_edge = torch.maximum(pred_edge, pred_edge_h)
+
+    tgt_edge = torch.abs(tgt[:, :, 1:, :] - tgt[:, :, :-1, :])
+    tgt_edge = F.pad(tgt_edge, (0, 0, 1, 0))
+    tgt_edge_h = torch.abs(tgt[:, :, :, 1:] - tgt[:, :, :, :-1])
+    tgt_edge_h = F.pad(tgt_edge_h, (1, 0, 0, 0))
+    tgt_edge = torch.maximum(tgt_edge, tgt_edge_h)
+
+    tp = (pred_edge * tgt_edge).sum(dim=(1, 2, 3))
+    fp = (pred_edge * (1.0 - tgt_edge)).sum(dim=(1, 2, 3))
+    fn = ((1.0 - pred_edge) * tgt_edge).sum(dim=(1, 2, 3))
+    f1 = (2.0 * tp + eps) / (2.0 * tp + fp + fn + eps)
+    return float(f1.mean().item())
+
+
+@torch.no_grad()
+def eval_sam_loader_boundary_f1(
+    sam: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    multimask_output: bool,
+    max_batches: Optional[int] = None,
+    show_progress: bool = True,
+    desc: str = "SAM boundary F1",
+) -> float:
+    sam.eval()
+    tot = 0.0
+    n = 0
+    if max_batches is not None:
+        iterable = islice(loader, max_batches)
+        total = max_batches
+    else:
+        iterable = loader
+        total = len(loader) if hasattr(loader, "__len__") else None
+    bar = tqdm(iterable, desc=desc, total=total, disable=not show_progress, leave=False)
+    for batch in bar:
+        for b in batch:
+            b["image"] = b["image"].to(device, non_blocking=True)
+            b["boxes"] = b["boxes"].to(device, non_blocking=True)
+            b["low_res_mask_gt"] = b["low_res_mask_gt"].to(device, non_blocking=True)
+        logits, _ = forward_sam_trainable(sam, batch, multimask_output, device)
+        tgt = torch.stack([b["low_res_mask_gt"] for b in batch], dim=0)
+        tot += mean_boundary_f1_from_logits(logits, tgt) * len(batch)
+        n += len(batch)
+    return tot / max(n, 1)
+
+
+def _jitter_box_xyxy(
+    box_xyxy: torch.Tensor,
+    jitter_frac: float,
+    image_side: int,
+    rng: np.random.Generator,
+) -> torch.Tensor:
+    flat_vals = box_xyxy.reshape(-1).tolist()
+    if len(flat_vals) < 4:
+        raise ValueError("Expected at least 4 box values for jittering")
+    x0, y0, x1, y1 = [float(v) for v in flat_vals[:4]]
+    w = max(1.0, x1 - x0)
+    h = max(1.0, y1 - y0)
+    dx = w * jitter_frac * float(rng.uniform(-1.0, 1.0))
+    dy = h * jitter_frac * float(rng.uniform(-1.0, 1.0))
+    dw = w * jitter_frac * float(rng.uniform(-0.5, 0.5))
+    dh = h * jitter_frac * float(rng.uniform(-0.5, 0.5))
+
+    nx0 = max(0.0, min(image_side - 1.0, x0 + dx))
+    ny0 = max(0.0, min(image_side - 1.0, y0 + dy))
+    nx1 = max(nx0 + 1.0, min(float(image_side), x1 + dx + dw))
+    ny1 = max(ny0 + 1.0, min(float(image_side), y1 + dy + dh))
+    return torch.tensor([[nx0, ny0, nx1, ny1]], dtype=torch.float32)
+
+
+@torch.no_grad()
+def eval_prompt_robustness(
+    sam: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    multimask_output: bool,
+    jitter_samples: int,
+    jitter_frac: float,
+    image_side: int,
+    max_batches: Optional[int] = None,
+    show_progress: bool = True,
+) -> Dict[str, float]:
+    sam.eval()
+    rng = np.random.default_rng(42)
+    base_tot = 0.0
+    robust_tot = 0.0
+    n = 0
+
+    if max_batches is not None:
+        iterable = islice(loader, max_batches)
+        total = max_batches
+    else:
+        iterable = loader
+        total = len(loader) if hasattr(loader, "__len__") else None
+
+    bar = tqdm(iterable, desc="SAM prompt robustness", total=total, disable=not show_progress, leave=False)
+    for batch in bar:
+        for b in batch:
+            b["image"] = b["image"].to(device, non_blocking=True)
+            b["boxes"] = b["boxes"].to(device, non_blocking=True)
+            b["low_res_mask_gt"] = b["low_res_mask_gt"].to(device, non_blocking=True)
+        tgt = torch.stack([b["low_res_mask_gt"] for b in batch], dim=0)
+        base_logits, _ = forward_sam_trainable(sam, batch, multimask_output, device)
+        base_iou = mean_iou_from_logits(base_logits, tgt)
+
+        jitter_iou_acc = 0.0
+        for _ in range(max(1, jitter_samples)):
+            jb = []
+            for b in batch:
+                clone = dict(b)
+                orig_boxes = b["boxes"].detach().cpu()
+                box_for_jitter = orig_boxes[0] if orig_boxes.ndim >= 2 else orig_boxes
+                jittered = _jitter_box_xyxy(
+                    box_for_jitter,
+                    jitter_frac=jitter_frac,
+                    image_side=image_side,
+                    rng=rng,
+                )
+                if orig_boxes.ndim == 3:
+                    jittered = jittered.unsqueeze(0)
+                clone["boxes"] = jittered.to(device)
+                jb.append(clone)
+            logits_j, _ = forward_sam_trainable(sam, jb, multimask_output, device)
+            jitter_iou_acc += mean_iou_from_logits(logits_j, tgt)
+
+        robust_iou = jitter_iou_acc / float(max(1, jitter_samples))
+        base_tot += base_iou * len(batch)
+        robust_tot += robust_iou * len(batch)
+        n += len(batch)
+
+    baseline_iou = base_tot / max(n, 1)
+    robust_iou = robust_tot / max(n, 1)
+    return {
+        "baseline_iou": baseline_iou,
+        "robust_iou": robust_iou,
+        "iou_drop": baseline_iou - robust_iou,
+    }
+
+
+def _resolve_annotation_uri_to_local_path(annotation_uri: str, data_cfg: dict) -> Path:
+    raw = annotation_uri.strip()
+    if raw.startswith("s3://"):
+        local_root_raw = data_cfg.get("objstore_local_root")
+        if not local_root_raw:
+            raise ValueError("Subset manifest contains s3:// annotation_uri but data.objstore_local_root is not set")
+        parts = raw.split("/", 3)
+        if len(parts) < 4:
+            raise ValueError(f"Invalid annotation URI in subset manifest: {raw}")
+        return (Path(local_root_raw).expanduser().resolve() / parts[3]).resolve()
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    return (Path(data_cfg["annotation_root"]).expanduser().resolve() / p).resolve()
+
+
+def _load_subset_manifest_rows(manifest_csv: Path, data_cfg: dict) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    with manifest_csv.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError(f"Subset manifest has no header: {manifest_csv}")
+        for row in reader:
+            image_uri = (row.get("image_uri") or "").strip()
+            annotation_uri = (row.get("annotation_uri") or "").strip()
+            if not image_uri or not annotation_uri:
+                continue
+            ann_idx_raw = (row.get("ann_idx") or "0").strip()
+            ann_idx = int(ann_idx_raw) if ann_idx_raw else 0
+            rows.append(
+                {
+                    "image_path": _resolve_image_uri_to_local_path(image_uri, data_cfg),
+                    "annotation_path": _resolve_annotation_uri_to_local_path(annotation_uri, data_cfg),
+                    "ann_idx": ann_idx,
+                }
+            )
+    if not rows:
+        raise RuntimeError(f"No rows found in subset manifest: {manifest_csv}")
+    return rows
+
+
+class SubsetManifestSamDataset(torch.utils.data.Dataset):
+    def __init__(self, rows: List[Dict[str, Any]], img_size: int = 1024, low_res: int = 256):
+        self.rows = rows
+        self.img_size = img_size
+        self.low_res = low_res
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        row = self.rows[index]
+        image_path = Path(row["image_path"])
+        annotation_path = Path(row["annotation_path"])
+        ann_idx = int(row.get("ann_idx", 0))
+
+        img_bgr = cv2.imread(str(image_path))
+        if img_bgr is None:
+            raise FileNotFoundError(str(image_path))
+        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        oh, ow = rgb.shape[:2]
+        rs = ResizeLongestSide(self.img_size)
+        rgb_s = rs.apply_image(rgb)
+        nh, nw = rgb_s.shape[:2]
+
+        with annotation_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        anns = _annotations_list_from_json(data)
+        if not anns:
+            raise ValueError(f"No annotations in {annotation_path}")
+        ann_idx = max(0, min(ann_idx, len(anns) - 1))
+        ann = anns[ann_idx]
+
+        mask_full = mask_from_ann_segmentation(ann, oh, ow)
+        if mask_full is None:
+            raise ValueError(f"Empty mask for {image_path} ann {ann_idx}")
+        mask_s = cv2.resize(mask_full, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        box = _box_xyxy_resized_from_ann_or_mask(ann, oh, ow, nh, nw, mask_s)
+
+        sam_image = torch.from_numpy(rgb_s).permute(2, 0, 1).float()
+        padded = np.zeros((SAM_ENCODER_PAD_SIDE, SAM_ENCODER_PAD_SIDE), dtype=np.float32)
+        padded[0:nh, 0:nw] = mask_s.astype(np.float32, copy=False)
+        low_tgt = cv2.resize(padded, (self.low_res, self.low_res), interpolation=cv2.INTER_NEAREST)
+        low_tgt_t = torch.from_numpy(low_tgt).float().unsqueeze(0)
+
+        return {
+            "image": sam_image,
+            "original_size": (oh, ow),
+            "boxes": box.unsqueeze(0),
+            "low_res_mask_gt": low_tgt_t,
+            "path": str(image_path),
+            "ann_idx": ann_idx,
+        }
+
+
+def _build_subset_loader(manifest_csv: Path, data_cfg: dict, batch_size: int, num_workers: int) -> DataLoader:
+    rows = _load_subset_manifest_rows(manifest_csv, data_cfg)
+    dataset = SubsetManifestSamDataset(rows, img_size=int(data_cfg.get("image_size", 1024)))
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=_sam_collate,
+        pin_memory=torch.cuda.is_available(),
+    )
 
 
 def _sam_collate(batch: List[Any]) -> List[Any]:
@@ -584,22 +853,126 @@ def train_fn(config: Dict[str, Any]) -> None:
             desc="SAM test Dice",
         )
 
+        boundary_f1 = eval_sam_loader_boundary_f1(
+            sam,
+            sam_test,
+            device,
+            multimask,
+            max_batches=max_eval_batches,
+            show_progress=show_tqdm,
+            desc="SAM test boundary F1",
+        )
+
+        prompt_robust_max_batches_raw = offline_eval_cfg.get("prompt_robust_max_batches")
+        prompt_robust_max_batches = int(prompt_robust_max_batches_raw) if prompt_robust_max_batches_raw is not None else min(100, max_eval_batches or 100)
+        prompt_robustness = eval_prompt_robustness(
+            sam,
+            sam_test,
+            device,
+            multimask,
+            jitter_samples=int(offline_eval_cfg.get("prompt_jitter_samples", 3)),
+            jitter_frac=float(offline_eval_cfg.get("prompt_jitter_frac", 0.1)),
+            image_side=int(data_cfg.get("image_size", 1024)),
+            max_batches=prompt_robust_max_batches,
+            show_progress=show_tqdm,
+        )
+
+        small_object_iou: Optional[float] = None
+        low_light_iou: Optional[float] = None
+
+        small_manifest_in = offline_eval_cfg.get("small_object_manifest_csv")
+        if small_manifest_in:
+            small_loader = _build_subset_loader(
+                Path(small_manifest_in).resolve(),
+                data_cfg,
+                batch_size=batch_size,
+                num_workers=num_workers,
+            )
+            small_object_iou = eval_sam_loader_mean_iou(
+                sam,
+                small_loader,
+                device,
+                multimask,
+                max_batches=None,
+                show_progress=show_tqdm,
+                desc="SAM small-object IoU",
+            )
+
+        low_light_manifest_in = offline_eval_cfg.get("low_light_manifest_csv")
+        if low_light_manifest_in:
+            low_light_loader = _build_subset_loader(
+                Path(low_light_manifest_in).resolve(),
+                data_cfg,
+                batch_size=batch_size,
+                num_workers=num_workers,
+            )
+            low_light_iou = eval_sam_loader_mean_iou(
+                sam,
+                low_light_loader,
+                device,
+                multimask,
+                max_batches=None,
+                show_progress=show_tqdm,
+                desc="SAM low-light IoU",
+            )
+
         runtime_seconds = max(1, int(time.time()) - run_started_unix)
         thresholds = OfflineEvalThresholds(
             min_dice=float(offline_eval_cfg.get("min_dice", 0.8)),
             min_iou=float(offline_eval_cfg.get("min_iou", 0.7)),
             max_runtime_seconds=int(offline_eval_cfg.get("max_runtime_seconds", 14_400)),
+            min_boundary_f1=(
+                float(offline_eval_cfg.get("min_boundary_f1"))
+                if offline_eval_cfg.get("min_boundary_f1") is not None
+                else None
+            ),
+            max_prompt_iou_drop=(
+                float(offline_eval_cfg.get("max_prompt_iou_drop"))
+                if offline_eval_cfg.get("max_prompt_iou_drop") is not None
+                else None
+            ),
+            min_prompt_robust_iou=(
+                float(offline_eval_cfg.get("min_prompt_robust_iou"))
+                if offline_eval_cfg.get("min_prompt_robust_iou") is not None
+                else None
+            ),
+            min_small_object_iou=(
+                float(offline_eval_cfg.get("min_small_object_iou"))
+                if offline_eval_cfg.get("min_small_object_iou") is not None
+                else None
+            ),
+            min_low_light_iou=(
+                float(offline_eval_cfg.get("min_low_light_iou"))
+                if offline_eval_cfg.get("min_low_light_iou") is not None
+                else None
+            ),
+            enable_boundary_gate=bool(offline_eval_cfg.get("enable_boundary_gate", False)),
+            enable_prompt_robustness_gate=bool(offline_eval_cfg.get("enable_prompt_robustness_gate", False)),
+            enable_small_object_gate=bool(offline_eval_cfg.get("enable_small_object_gate", False)),
+            enable_low_light_gate=bool(offline_eval_cfg.get("enable_low_light_gate", False)),
         )
         metrics = OfflineEvalMetrics(
             dice=float(test_dice),
             iou=float(test_iou),
             runtime_seconds=runtime_seconds,
+            boundary_f1=float(boundary_f1),
+            prompt_iou_drop=float(prompt_robustness["iou_drop"]),
+            prompt_robust_iou=float(prompt_robustness["robust_iou"]),
+            small_object_iou=float(small_object_iou) if small_object_iou is not None else None,
+            low_light_iou=float(low_light_iou) if low_light_iou is not None else None,
         )
         quality_gate = evaluate_quality_gates(metrics, thresholds)
 
         if log_to_mlflow:
             mlflow.log_metric("test_mean_iou_lowres", test_iou)
             mlflow.log_metric("test_mean_dice_lowres", test_dice)
+            mlflow.log_metric("test_boundary_f1_lowres", boundary_f1)
+            mlflow.log_metric("test_prompt_robust_iou", prompt_robustness["robust_iou"])
+            mlflow.log_metric("test_prompt_iou_drop", prompt_robustness["iou_drop"])
+            if small_object_iou is not None:
+                mlflow.log_metric("test_small_object_iou", small_object_iou)
+            if low_light_iou is not None:
+                mlflow.log_metric("test_low_light_iou", low_light_iou)
             mlflow.log_metric("runtime_seconds", runtime_seconds)
             mlflow.log_param("offline_eval_min_iou", thresholds.min_iou)
             mlflow.log_param("offline_eval_min_dice", thresholds.min_dice)
@@ -616,13 +989,40 @@ def train_fn(config: Dict[str, Any]) -> None:
             "metrics": {
                 "dice": round(test_dice, 6),
                 "iou": round(test_iou, 6),
+                "boundaryF1": round(boundary_f1, 6),
+                "promptRobustIou": round(prompt_robustness["robust_iou"], 6),
+                "promptIouDrop": round(prompt_robustness["iou_drop"], 6),
+                "smallObjectIou": round(small_object_iou, 6) if small_object_iou is not None else None,
+                "lowLightIou": round(low_light_iou, 6) if low_light_iou is not None else None,
                 "runtimeSeconds": runtime_seconds,
+            },
+            "testSuite": {
+                "offlineEval": {
+                    "testMeanDiceLowres": round(test_dice, 6),
+                    "testMeanIouLowres": round(test_iou, 6),
+                    "testBoundaryF1Lowres": round(boundary_f1, 6),
+                    "promptRobustness": {
+                        "baselineIou": round(prompt_robustness["baseline_iou"], 6),
+                        "robustIou": round(prompt_robustness["robust_iou"], 6),
+                        "iouDrop": round(prompt_robustness["iou_drop"], 6),
+                    },
+                    "hardSubsets": {
+                        "smallObjectIou": round(small_object_iou, 6) if small_object_iou is not None else None,
+                        "lowLightIou": round(low_light_iou, 6) if low_light_iou is not None else None,
+                    },
+                    "runtimeSeconds": runtime_seconds,
+                }
             },
             "qualityGate": {
                 **quality_gate,
                 "expectedMinDice": thresholds.min_dice,
                 "expectedMinIou": thresholds.min_iou,
                 "expectedMaxRuntimeSeconds": thresholds.max_runtime_seconds,
+                "expectedMinBoundaryF1": thresholds.min_boundary_f1,
+                "expectedMaxPromptIouDrop": thresholds.max_prompt_iou_drop,
+                "expectedMinPromptRobustIou": thresholds.min_prompt_robust_iou,
+                "expectedMinSmallObjectIou": thresholds.min_small_object_iou,
+                "expectedMinLowLightIou": thresholds.min_low_light_iou,
             },
             "mlflow": {
                 "trackingUri": tracking_uri,
@@ -634,19 +1034,75 @@ def train_fn(config: Dict[str, Any]) -> None:
         register_enabled = bool(registry_cfg.get("enabled", True))
         if register_enabled and quality_gate["passed"] and run_id:
             model_name = str(registry_cfg.get("model_name", "immich-sticker-mobilesam"))
+            production_alias = str(registry_cfg.get("production_alias", "Production"))
+            set_production_alias = bool(registry_cfg.get("set_production_alias", True))
             client = MlflowClient(tracking_uri=tracking_uri)
             try:
                 client.get_registered_model(model_name)
             except Exception:
                 client.create_registered_model(model_name)
             model_uri = f"runs:/{run_id}/checkpoints/mobile_sam_full.pt"
-            mv = mlflow.register_model(model_uri=model_uri, name=model_name)
+            try:
+                mv = mlflow.register_model(model_uri=model_uri, name=model_name)
+            except Exception as exc:
+                print(f"mlflow.register_model fallback via create_model_version: {exc}", file=sys.stderr)
+                artifact_source = None
+                if active_run is not None and active_run.info.artifact_uri:
+                    artifact_source = active_run.info.artifact_uri.rstrip("/") + "/checkpoints/mobile_sam_full.pt"
+                if not artifact_source:
+                    raise
+                mv = client.create_model_version(name=model_name, source=artifact_source, run_id=run_id)
             client.set_model_version_tag(model_name, str(mv.version), "quality_gate_passed", "true")
+            client.set_model_version_tag(model_name, str(mv.version), "test_dice", str(round(test_dice, 6)))
+            client.set_model_version_tag(model_name, str(mv.version), "test_iou", str(round(test_iou, 6)))
+            client.set_model_version_tag(model_name, str(mv.version), "test_boundary_f1", str(round(boundary_f1, 6)))
+            client.set_model_version_tag(
+                model_name,
+                str(mv.version),
+                "test_prompt_iou_drop",
+                str(round(float(prompt_robustness["iou_drop"]), 6)),
+            )
+            client.set_model_version_tag(
+                model_name,
+                str(mv.version),
+                "test_prompt_robust_iou",
+                str(round(float(prompt_robustness["robust_iou"]), 6)),
+            )
+            if small_object_iou is not None:
+                client.set_model_version_tag(
+                    model_name,
+                    str(mv.version),
+                    "test_small_object_iou",
+                    str(round(float(small_object_iou), 6)),
+                )
+            if low_light_iou is not None:
+                client.set_model_version_tag(
+                    model_name,
+                    str(mv.version),
+                    "test_low_light_iou",
+                    str(round(float(low_light_iou), 6)),
+                )
+            client.set_model_version_tag(model_name, str(mv.version), "runtime_seconds", str(runtime_seconds))
+            client.set_model_version_tag(model_name, str(mv.version), "offline_eval_min_dice", str(thresholds.min_dice))
+            client.set_model_version_tag(model_name, str(mv.version), "offline_eval_min_iou", str(thresholds.min_iou))
+            client.set_model_version_tag(
+                model_name,
+                str(mv.version),
+                "offline_eval_max_runtime_seconds",
+                str(thresholds.max_runtime_seconds),
+            )
             if orchestrator_run_id:
                 client.set_model_version_tag(model_name, str(mv.version), "immich_run_id", orchestrator_run_id)
+            if set_production_alias and production_alias:
+                try:
+                    client.set_registered_model_alias(model_name, production_alias, str(mv.version))
+                except Exception as exc:
+                    print(f"Failed to set model alias '{production_alias}': {exc}", file=sys.stderr)
             result_payload["mlflow"]["modelName"] = model_name
             result_payload["mlflow"]["modelVersion"] = str(mv.version)
             result_payload["mlflow"]["registered"] = True
+            if set_production_alias and production_alias:
+                result_payload["mlflow"]["alias"] = production_alias
         else:
             result_payload["mlflow"]["registered"] = False
 

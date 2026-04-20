@@ -607,9 +607,6 @@ def build_datasets(
     val_manifest_csv: Path | None,
     split_manifest_out: Path | None,
 ):
-    all_pairs = collect_encoder_pairs(data_cfg)
-    full = SA1BEncoderDataset(all_pairs, img_size=img_size)
-
     if train_manifest_csv is not None or val_manifest_csv is not None:
         if train_manifest_csv is None or val_manifest_csv is None:
             raise ValueError("Both data.train_manifest_csv and data.val_manifest_csv must be set together.")
@@ -618,6 +615,15 @@ def build_datasets(
         if not val_manifest_csv.is_file():
             raise FileNotFoundError(f"val manifest csv not found: {val_manifest_csv}")
         train_p, val_p, test_p = load_csv_manifest_pairs(train_manifest_csv, val_manifest_csv, data_cfg)
+        all_pairs = []
+        seen = set()
+        for jpg_path, npy_path in train_p + val_p + test_p:
+            key = (str(jpg_path.resolve()), str(npy_path.resolve()))
+            if key in seen:
+                continue
+            seen.add(key)
+            all_pairs.append((jpg_path, npy_path))
+        full = SA1BEncoderDataset(all_pairs, img_size=img_size)
         meta = {
             "source": "manifest_csv",
             "train_manifest_csv": str(train_manifest_csv),
@@ -625,9 +631,13 @@ def build_datasets(
             "test_policy": "test_equals_val",
         }
     elif split_manifest is not None and split_manifest.is_file():
+        all_pairs = collect_encoder_pairs(data_cfg)
+        full = SA1BEncoderDataset(all_pairs, img_size=img_size)
         train_p, val_p, test_p = load_split_manifest_pairs(split_manifest)
         meta = {"source": "manifest", "path": str(split_manifest)}
     else:
+        all_pairs = collect_encoder_pairs(data_cfg)
+        full = SA1BEncoderDataset(all_pairs, img_size=img_size)
         train_p, val_p, test_p = split_pairs(all_pairs, seed, train_frac, val_frac, test_frac)
         meta = {
             "source": "fresh_split",

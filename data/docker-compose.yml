@@ -1,34 +1,12 @@
 services:
-  # 1. DATABASE (Source of Truth)
-  postgres:
-    image: postgres:15-alpine
-    container_name: sticker-db
-    env_file: .env
-    ports:
-      - "5432:5432"
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-
-  # 2. DATABASE GUI (View tables at http://<ip>:8081)
-  adminer:
-    image: adminer
-    ports:
-      - "8081:8080"
-    depends_on:
-      - postgres
-
-  # 3. DATA INGESTION (Phase 1)
+  # 1. DATA INGESTION (Phase 1)
   ingest-data:
     build: .
     env_file: .env
     volumes:
       - ./ingest_data.py:/app/ingest_data.py
-    command: ["python", "ingest_data.py", "--url", "https://scontent-phl2-1.xx.fbcdn.net/m1/v/t6/An_-m2SWozW4o-FatJEIY1Anj32x8TnUqad9WMAVkMaZHkDyHfjpLcVlQoTFhgQihg8U4R5KqJvoJrtBwT3eKH-Yj5-LfY0.tar?_nc_gid=rRDUkeyKUjg4gpQGZ-ehWw&_nc_oc=Adq0IL4iTYBQN_VARijoyoDC6qb5JpDUz56g3zCvoZO6W5R6nMFZHKGufSQ9imfojX5EYtGbYqJFe9mgFAbJ16-i&ccb=10-5&oh=00_Af0NEoMqKT0Q2wsc77JG_qHmvLvQfGh0Ngbl8MBSQXluTw&oe=69FB997E&_nc_sid=0fdd51"]
-    depends_on:
-      - postgres
-
-  # 4. DATA SPLITTING (Phase 1)
+    command: ["python", "ingest_data.py", "--url", "${INGEST_ARCHIVE_URL}"]
+  # 2. DATA SPLITTING (Phase 1)
   split-data:
     build: .
     env_file: .env
@@ -38,7 +16,7 @@ services:
     depends_on:
       - ingest-data
 
-  # 7. BACKEND API (Phase 2/3 + Online Features)
+  # 3. BACKEND API (Phase 2/3 + Online Features)
   dummy-api:
     build: .
     env_file: .env
@@ -48,10 +26,7 @@ services:
       - ./dummy_api.py:/app/dummy_api.py
       - ./live_drift.py:/app/live_drift.py
     command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
-    depends_on:
-      - postgres
-
-  # 7b. PROMETHEUS (Live metrics scraping)
+  # 4. PROMETHEUS (Live metrics scraping)
   prometheus:
     image: prom/prometheus:v2.52.0
     ports:
@@ -62,7 +37,7 @@ services:
     depends_on:
       - dummy-api
 
-  # 7c. GRAFANA (Dashboards)
+  # 5. GRAFANA (Dashboards)
   grafana:
     image: grafana/grafana-oss:10.4.2
     ports:
@@ -75,7 +50,7 @@ services:
     depends_on:
       - prometheus
 
-  # 8. TRAFFIC GENERATOR (Simulating Users)
+  # 6. TRAFFIC GENERATOR (Simulating Users)
   traffic-generator:
     build: .
     env_file: .env
@@ -85,7 +60,7 @@ services:
     depends_on:
       - dummy-api
 
-  # 9. BATCH PIPELINE (The Lakehouse Compiler)
+  # 7. BATCH PIPELINE (The Lakehouse Compiler)
   batch-pipeline:
     build: .
     env_file: .env
@@ -95,23 +70,46 @@ services:
     # We use 'run' instead of 'up' for this, or leave it for manual triggers
     profiles: ["batch"] 
     command: ["python", "batch_pipeline.py"]
-    depends_on:
-      - postgres
-
-  # 10. RETRAINING TRIGGER (Threshold-based retrain orchestrator)
+  # 8. RETRAINING TRIGGER (Threshold-based retrain orchestrator)
   retraining-trigger:
     build: .
     env_file: .env
     volumes:
       - ./retraining_trigger.py:/app/retraining_trigger.py
       - ./retraining_trigger_logic.py:/app/retraining_trigger_logic.py
+      - ./model_source_resolver.py:/app/model_source_resolver.py
+      - ./model_deployer.py:/app/model_deployer.py
       - .:/app
     profiles: ["batch"]
     command: ["python", "retraining_trigger.py", "--dry-run"]
-    depends_on:
-      - postgres
 
-  # 11. DRIFT DETECTOR BUILD (Reference artifact generation)
+  qc-scheduler:
+    build: .
+    env_file: .env
+    volumes:
+      - ./batch_pipeline.py:/app/batch_pipeline.py
+      - .:/app
+    profiles: ["auto"]
+    command:
+      - "bash"
+      - "-lc"
+      - "while true; do python batch_pipeline.py || true; sleep ${QC_INTERVAL_SECONDS:-300}; done"
+
+  retraining-scheduler:
+    build: .
+    env_file: .env
+    volumes:
+      - ./retraining_trigger.py:/app/retraining_trigger.py
+      - ./retraining_trigger_logic.py:/app/retraining_trigger_logic.py
+      - ./model_source_resolver.py:/app/model_source_resolver.py
+      - ./model_deployer.py:/app/model_deployer.py
+      - .:/app
+    profiles: ["auto"]
+    command:
+      - "bash"
+      - "-lc"
+      - "while true; do python retraining_trigger.py || true; sleep ${RETRAIN_TRIGGER_INTERVAL_SECONDS:-300}; done"
+  # 9. DRIFT DETECTOR BUILD (Reference artifact generation)
   build-drift-detector:
     build: .
     env_file: .env
@@ -120,9 +118,15 @@ services:
       - ./live_drift.py:/app/live_drift.py
     profiles: ["batch"]
     command: ["python", "build_live_drift_detector.py"]
-    depends_on:
-      - postgres
+
+  # 10. SYNTHETIC USER SEEDING (one-time helper)
+  seed-synthetic-users:
+    build: .
+    env_file: .env
+    volumes:
+      - ./seed_synthetic_users.py:/app/seed_synthetic_users.py
+    profiles: ["seed"]
+    command: ["python", "seed_synthetic_users.py", "--opt-in-count", "5000", "--opt-out-count", "1000"]
 
 volumes:
-  pg_data:
   grafana_data:

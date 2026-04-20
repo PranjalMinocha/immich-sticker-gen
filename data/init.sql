@@ -1,39 +1,36 @@
-CREATE TABLE users (
-    user_id SERIAL PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(100) NOT NULL,
-    ml_training_opt_in BOOLEAN DEFAULT FALSE, -- New Opt-In Column
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS "sticker_generation" (
+    "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+    "source" varchar(16) NOT NULL DEFAULT 'synthetic',
+    "userId" uuid NOT NULL,
+    "assetId" uuid NOT NULL,
+    "bbox" jsonb NOT NULL,
+    "pointCoords" jsonb NOT NULL,
+    "mlSuggestedMask" text NOT NULL,
+    "userSavedMask" text,
+    "s3StickerKey" varchar(255),
+    "processingTimeMs" integer NOT NULL DEFAULT 0,
+    "saved" boolean,
+    "numTries" integer NOT NULL DEFAULT 1,
+    "editedPixels" integer NOT NULL DEFAULT 0,
+    "qualityStatus" varchar(16) NOT NULL DEFAULT 'pending',
+    "qualityCheckedAt" timestamptz,
+    "qualityCheckVersion" integer NOT NULL DEFAULT 1,
+    "qualityFailReasonsJson" text,
+    "usedForTraining" boolean NOT NULL DEFAULT false,
+    "usedForTrainingAt" timestamptz,
+    "retrainRunId" varchar(64),
+    "createdAt" timestamptz NOT NULL DEFAULT now(),
+    "updatedAt" timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT "sticker_generation_source_check" CHECK ("source" IN ('synthetic', 'real')),
+    CONSTRAINT "sticker_generation_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "sticker_generation_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user" ("id") ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT "sticker_generation_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "asset" ("id") ON UPDATE CASCADE ON DELETE CASCADE
 );
 
-CREATE TABLE image_uploads (
-    image_id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(user_id),
-    s3_object_key VARCHAR(255), -- Track where the API saved it in S3/MinIO
-    original_filename VARCHAR(255),
-    file_size_bytes INTEGER,
-    upload_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE sticker_generations (
-    generation_id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES users(user_id),
-    image_id INTEGER REFERENCES image_uploads(image_id),
-    bbox JSONB,
-    point_coords JSONB,
-    ml_suggested_mask TEXT,
-    user_saved_mask TEXT,
-    s3_sticker_key VARCHAR(255),
-    processing_time_ms INTEGER,
-    saved BOOLEAN DEFAULT FALSE,
-    num_tries INTEGER DEFAULT 1,
-    edited_pixels INTEGER DEFAULT 0,
-    quality_status VARCHAR(16) DEFAULT 'pending',
-    quality_checked_at TIMESTAMP,
-    quality_check_version INTEGER DEFAULT 1,
-    quality_fail_reasons_json TEXT,
-    used_for_training BOOLEAN DEFAULT FALSE,
-    used_for_training_at TIMESTAMP,
-    retrain_run_id VARCHAR(64),
-    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+CREATE INDEX IF NOT EXISTS "sticker_generation_source_idx" ON "sticker_generation" ("source");
+CREATE INDEX IF NOT EXISTS "sticker_generation_userId_idx" ON "sticker_generation" ("userId");
+CREATE INDEX IF NOT EXISTS "sticker_generation_assetId_idx" ON "sticker_generation" ("assetId");
+CREATE INDEX IF NOT EXISTS "sticker_generation_saved_idx" ON "sticker_generation" ("saved");
+CREATE INDEX IF NOT EXISTS "sticker_generation_createdAt_idx" ON "sticker_generation" ("createdAt");

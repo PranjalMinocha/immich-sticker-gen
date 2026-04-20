@@ -111,24 +111,78 @@ def _validate_required_fields(row: Dict[str, Any], required_fields: List[str]) -
     return reasons
 
 
+def _validate_mask_rle(raw_mask: Any) -> Optional[str]:
+    if raw_mask is None:
+        return "missing_mask"
+
+    if isinstance(raw_mask, str):
+        try:
+            payload = json.loads(raw_mask)
+        except json.JSONDecodeError:
+            return "invalid_json"
+    elif isinstance(raw_mask, dict):
+        payload = raw_mask
+    else:
+        return "invalid_type"
+
+    if not isinstance(payload, dict):
+        return "invalid_schema"
+
+    size = payload.get("size")
+    counts = payload.get("counts")
+    if not isinstance(size, list) or len(size) != 2:
+        return "invalid_size"
+    if not isinstance(counts, list):
+        return "invalid_counts"
+
+    try:
+        height = int(size[0])
+        width = int(size[1])
+    except (TypeError, ValueError):
+        return "invalid_size"
+
+    if height <= 0 or width <= 0:
+        return "invalid_size"
+
+    expected = height * width
+    total = 0
+    for raw_count in counts:
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            return "invalid_count_value"
+        if count < 0:
+            return "negative_count"
+        total += count
+
+    if total != expected:
+        return "invalid_counts_total"
+
+    return None
+
+
 def validate_row(row: Dict[str, Any], cfg: RetrainingQualityConfig) -> ValidationResult:
     hard_fail_reasons: List[str] = []
     soft_warn_reasons: List[str] = []
 
-    required = ["generation_id", "user_id", "image_id", "generated_at", "user_saved_mask"]
+    required = ["generationId", "userId", "assetId", "createdAt", "userSavedMask"]
     hard_fail_reasons.extend(_validate_required_fields(row, required))
 
     bbox, bbox_err = _parse_bbox(row.get("bbox"))
     if bbox_err is not None:
         hard_fail_reasons.append("invalid_bbox:" + bbox_err)
 
-    point_coords, points_err = _parse_point_coords(row.get("point_coords"))
+    point_coords, points_err = _parse_point_coords(row.get("pointCoords"))
     if points_err is not None:
         hard_fail_reasons.append("invalid_point_coords:" + points_err)
 
-    edited_pixels = row.get("edited_pixels")
-    num_tries = row.get("num_tries")
-    processing_time_ms = row.get("processing_time_ms")
+    mask_err = _validate_mask_rle(row.get("userSavedMask"))
+    if mask_err is not None:
+        hard_fail_reasons.append("invalid_user_saved_mask:" + mask_err)
+
+    edited_pixels = row.get("editedPixels")
+    num_tries = row.get("numTries")
+    processing_time_ms = row.get("processingTimeMs")
 
     if edited_pixels is not None and edited_pixels < 0:
         hard_fail_reasons.append("invalid_numeric_range:edited_pixels_negative")
@@ -144,17 +198,13 @@ def validate_row(row: Dict[str, Any], cfg: RetrainingQualityConfig) -> Validatio
     if isinstance(processing_time_ms, int) and processing_time_ms > cfg.max_processing_time_ms_warn:
         soft_warn_reasons.append("high_processing_time_ms")
 
-    metrics: Dict[str, Any] = {
-        "edited_pixels": edited_pixels,
-        "num_tries": num_tries,
-        "processing_time_ms": processing_time_ms,
-    }
+    metrics: Dict[str, Any] = {"editedPixels": edited_pixels, "numTries": num_tries, "processingTimeMs": processing_time_ms}
 
     dedupe_key = None
-    if bbox is not None and row.get("user_id") is not None and row.get("image_id") is not None:
+    if bbox is not None and row.get("userId") is not None and row.get("assetId") is not None:
         dedupe_key = "{uid}:{iid}:{x:.2f}:{y:.2f}:{w:.2f}:{h:.2f}".format(
-            uid=row["user_id"],
-            iid=row["image_id"],
+            uid=row["userId"],
+            iid=row["assetId"],
             x=bbox[0],
             y=bbox[1],
             w=bbox[2],
@@ -187,9 +237,9 @@ def validate_rows(rows: List[Dict[str, Any]], cfg: RetrainingQualityConfig) -> L
         hard_fail_reasons = list(result.hard_fail_reasons)
         soft_warn_reasons = list(result.soft_warn_reasons)
 
-        generation_id = row.get("generation_id")
+        generation_id = row.get("generationId")
         if generation_id in seen_generation_ids:
-            hard_fail_reasons.append("duplicate_generation_id")
+            hard_fail_reasons.append("duplicate_generationId")
         else:
             seen_generation_ids.add(generation_id)
 
@@ -259,6 +309,14 @@ def should_block_batch(summary: Dict[str, Any], cfg: RetrainingQualityConfig) ->
             "hard_fail_rate_exceeded:{:.3f}>{:.3f}".format(
                 summary["hard_fail_rate"],
                 cfg.max_hard_fail_rate,
+            )
+        )
+
+    if summary["soft_warn_rate"] > cfg.max_soft_warn_rate:
+        reasons.append(
+            "soft_warn_rate_exceeded:{:.3f}>{:.3f}".format(
+                summary["soft_warn_rate"],
+                cfg.max_soft_warn_rate,
             )
         )
 

@@ -10,6 +10,7 @@ prometheus-fastapi-instrumentator==6.1.0
 # --- Online Feature Computation & Image Processing ---
 numpy==1.26.4
 Pillow==10.2.0
+pycocotools==2.0.7
 scikit-learn==1.7.2
 alibi-detect==0.12.0
 
@@ -22,3 +23,4 @@ tqdm==4.66.2
 pyspark==3.5.0
 pyiceberg[s3fs,sql-postgres]==0.11.1
 pyarrow==15.0.0
+mlflow==3.1.4

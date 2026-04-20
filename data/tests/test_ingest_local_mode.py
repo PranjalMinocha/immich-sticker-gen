@@ -30,10 +30,14 @@ class IngestLocalModeTests(unittest.TestCase):
             previous_backend = os.environ.get("STORAGE_BACKEND")
             previous_store = os.environ.get("LOCAL_STORE_ROOT")
             previous_hard_fail = os.environ.get("HARD_FAIL_RATE_MAX")
+            previous_strict = os.environ.get("STRICT_STORAGE_BACKEND")
+            previous_expected = os.environ.get("INGEST_EXPECTED_BACKEND")
 
             os.environ["STORAGE_BACKEND"] = "local"
             os.environ["LOCAL_STORE_ROOT"] = local_store
             os.environ["HARD_FAIL_RATE_MAX"] = "1.0"
+            os.environ["STRICT_STORAGE_BACKEND"] = "false"
+            os.environ.pop("INGEST_EXPECTED_BACKEND", None)
 
             try:
                 with tarfile.open(archive_path, "w") as archive:
@@ -88,6 +92,16 @@ class IngestLocalModeTests(unittest.TestCase):
                     os.environ.pop("HARD_FAIL_RATE_MAX", None)
                 else:
                     os.environ["HARD_FAIL_RATE_MAX"] = previous_hard_fail
+
+                if previous_strict is None:
+                    os.environ.pop("STRICT_STORAGE_BACKEND", None)
+                else:
+                    os.environ["STRICT_STORAGE_BACKEND"] = previous_strict
+
+                if previous_expected is None:
+                    os.environ.pop("INGEST_EXPECTED_BACKEND", None)
+                else:
+                    os.environ["INGEST_EXPECTED_BACKEND"] = previous_expected
 
 
 if __name__ == "__main__":

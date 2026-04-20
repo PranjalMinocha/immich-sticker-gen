@@ -41,10 +41,15 @@ class IngestionConfig:
     s3_access_key: Optional[str]
     s3_secret_key: Optional[str]
     raw_bucket: Optional[str]
+    strict_storage_backend: bool
+    expected_backend: Optional[str]
 
 
 def load_config() -> IngestionConfig:
     storage_backend = os.environ.get("STORAGE_BACKEND", "local").lower()
+    expected_backend = os.environ.get("INGEST_EXPECTED_BACKEND")
+    if expected_backend is not None:
+        expected_backend = expected_backend.lower().strip()
 
     return IngestionConfig(
         storage_backend=storage_backend,
@@ -69,10 +74,20 @@ def load_config() -> IngestionConfig:
         s3_access_key=os.environ.get("S3_ACCESS_KEY"),
         s3_secret_key=os.environ.get("S3_SECRET_KEY"),
         raw_bucket=os.environ.get("RAW_BUCKET"),
+        strict_storage_backend=os.environ.get("STRICT_STORAGE_BACKEND", "false").lower() == "true",
+        expected_backend=expected_backend,
     )
 
 
 def validate_storage_config(config: IngestionConfig) -> None:
+    if config.expected_backend and config.storage_backend != config.expected_backend:
+        raise ValueError(
+            f"STORAGE_BACKEND mismatch: expected '{config.expected_backend}', got '{config.storage_backend}'"
+        )
+
+    if config.strict_storage_backend and config.storage_backend != "s3":
+        raise ValueError("STRICT_STORAGE_BACKEND is enabled but STORAGE_BACKEND is not 's3'")
+
     if config.storage_backend == "s3":
         missing = [
             name

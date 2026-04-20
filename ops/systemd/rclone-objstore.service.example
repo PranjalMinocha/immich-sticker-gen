@@ -1,0 +1,25 @@
+[Unit]
+Description=Mount object storage at /mnt/objstore via rclone
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+ExecStartPre=/usr/bin/mkdir -p /mnt/objstore
+ExecStart=/usr/bin/rclone mount objstore-proj28: /mnt/objstore \
+  --allow-other \
+  --uid 0 \
+  --gid 0 \
+  --dir-cache-time 5m \
+  --vfs-cache-mode writes \
+  --vfs-cache-max-size 10G \
+  --log-level INFO \
+  --log-file /var/log/rclone-objstore.log
+ExecStop=/bin/fusermount -uz /mnt/objstore
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

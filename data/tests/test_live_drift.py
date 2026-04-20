@@ -1,5 +1,6 @@
 import os
 import shutil
+import tarfile
 import tempfile
 import unittest
 
@@ -28,6 +29,20 @@ class FakeS3Client:
         source = self._path(bucket, key)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         shutil.copy2(source, local_path)
+
+
+class EvilS3Client(FakeS3Client):
+    def download_file(self, bucket: str, key: str, local_path: str) -> None:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        with tarfile.open(local_path, mode="w:gz") as archive:
+            temp_dir = tempfile.mkdtemp(prefix="evil_tar_")
+            try:
+                marker = os.path.join(temp_dir, "payload.txt")
+                with open(marker, "w", encoding="utf-8") as file_handle:
+                    file_handle.write("x")
+                archive.add(marker, arcname="../escape.txt")
+            finally:
+                shutil.rmtree(temp_dir)
 
 
 class LiveDriftTests(unittest.TestCase):
@@ -59,6 +74,12 @@ class LiveDriftTests(unittest.TestCase):
 
             self.assertTrue(os.path.isdir(detector_downloaded))
             self.assertTrue(os.path.exists(os.path.join(detector_downloaded, "marker.txt")))
+
+    def test_detector_artifact_rejects_unsafe_tar_members(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evil_s3 = EvilS3Client(root=temp_dir)
+            with self.assertRaises(ValueError):
+                download_detector_artifact(evil_s3, "bucket-a", "drift/cd.tar.gz", os.path.join(temp_dir, "cache"))
 
 
 if __name__ == "__main__":

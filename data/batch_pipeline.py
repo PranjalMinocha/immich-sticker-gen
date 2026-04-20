@@ -13,9 +13,10 @@ from pyspark.sql.window import Window
 from retraining_checks import load_quality_config, should_block_batch, summarize_validation, validate_rows
 
 
-POSTGRES_URI = os.environ.get("POSTGRES_URI")
-POSTGRES_USER = os.environ.get("DB_USER")
-POSTGRES_PASSWORD = os.environ.get("DB_PASS")
+POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "database")
+POSTGRES_DB = os.environ.get("POSTGRES_DB", "immich")
+POSTGRES_USER = os.environ.get("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "postgres")
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY")
@@ -23,6 +24,10 @@ RAW_BUCKET = os.environ.get("RAW_BUCKET")
 MAX_SAMPLES_PER_USER = int(os.environ.get("MAX_SAMPLES_PER_USER", "10"))
 QC_SCAN_LIMIT = int(os.environ.get("QC_SCAN_LIMIT", "20000"))
 QUALITY_CHECK_VERSION = int(os.environ.get("QUALITY_CHECK_VERSION", "1"))
+
+
+def _jdbc_url() -> str:
+    return os.environ.get("POSTGRES_URI") or f"jdbc:postgresql://{POSTGRES_HOST}:5432/{POSTGRES_DB}"
 
 
 spark = (
@@ -60,35 +65,35 @@ def _write_table(df, table_name: str) -> None:
 def _extract_pending_qc_candidates():
     query = f"""
     (SELECT
-        sg.generation_id,
-        sg.user_id,
-        sg.image_id,
-        sg.bbox::text AS bbox,
-        sg.point_coords::text AS point_coords,
-        sg.ml_suggested_mask,
-        sg.user_saved_mask,
-        sg.s3_sticker_key,
-        sg.processing_time_ms,
-        sg.num_tries,
-        sg.edited_pixels,
-        sg.generated_at,
-        sg.saved,
-        sg.used_for_training,
-        sg.quality_status,
-        u.ml_training_opt_in
-    FROM sticker_generations sg
-    JOIN users u ON sg.user_id = u.user_id
-    WHERE sg.saved = TRUE
-      AND sg.used_for_training = FALSE
-      AND u.ml_training_opt_in = TRUE
-      AND COALESCE(sg.quality_status, 'pending') = 'pending'
-    ORDER BY sg.generation_id
+        sg."id" AS "generationId",
+        sg."userId" AS "userId",
+        sg."assetId" AS "assetId",
+        sg."bbox"::text AS "bbox",
+        sg."pointCoords"::text AS "pointCoords",
+        sg."mlSuggestedMask" AS "mlSuggestedMask",
+        sg."userSavedMask" AS "userSavedMask",
+        sg."s3StickerKey" AS "s3StickerKey",
+        sg."processingTimeMs" AS "processingTimeMs",
+        sg."numTries" AS "numTries",
+        sg."editedPixels" AS "editedPixels",
+        sg."createdAt" AS "createdAt",
+        sg."saved" AS "saved",
+        sg."usedForTraining" AS "usedForTraining",
+        sg."qualityStatus" AS "qualityStatus",
+        u."mlTrainingOptIn" AS "mlTrainingOptIn"
+    FROM "sticker_generation" sg
+    JOIN "user" u ON sg."userId" = u."id"
+    WHERE sg."saved" = TRUE
+      AND sg."usedForTraining" = FALSE
+      AND u."mlTrainingOptIn" = TRUE
+      AND COALESCE(sg."qualityStatus", 'pending') = 'pending'
+    ORDER BY sg."createdAt", sg."id"
     LIMIT {QC_SCAN_LIMIT}) AS pending_qc_candidates
     """
 
     return (
         spark.read.format("jdbc")
-        .option("url", POSTGRES_URI)
+        .option("url", _jdbc_url())
         .option("driver", "org.postgresql.Driver")
         .option("dbtable", query)
         .option("user", POSTGRES_USER)
@@ -105,35 +110,40 @@ def _update_qc_status(pass_entries: List[Dict[str, Any]], fail_entries: List[Dic
     if dry_run:
         return
 
-    conn = psycopg2.connect(host="postgres", database="sticker_gen", user=POSTGRES_USER, password=POSTGRES_PASSWORD)
+    conn = psycopg2.connect(
+        host=POSTGRES_HOST,
+        database=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    )
     cur = conn.cursor()
     now_ts = datetime.utcnow()
     try:
         if pass_entries:
-            pass_ids = tuple(int(entry["row"]["generation_id"]) for entry in pass_entries)
+            pass_ids = [entry["row"]["generationId"] for entry in pass_entries]
             cur.execute(
                 """
-                UPDATE sticker_generations
-                SET quality_status = 'pass',
-                    quality_checked_at = %s,
-                    quality_check_version = %s,
-                    quality_fail_reasons_json = NULL
-                WHERE generation_id IN %s
+                UPDATE "sticker_generation"
+                SET "qualityStatus" = 'pass',
+                    "qualityCheckedAt" = %s,
+                    "qualityCheckVersion" = %s,
+                    "qualityFailReasonsJson" = NULL
+                WHERE "id" = ANY(%s::uuid[])
                 """,
                 (now_ts, QUALITY_CHECK_VERSION, pass_ids),
             )
 
         for entry in fail_entries:
-            generation_id = int(entry["row"]["generation_id"])
+            generation_id = entry["row"]["generationId"]
             fail_reasons_json = json.dumps(entry.get("hard_fail_reasons", []), sort_keys=True)
             cur.execute(
                 """
-                UPDATE sticker_generations
-                SET quality_status = 'fail',
-                    quality_checked_at = %s,
-                    quality_check_version = %s,
-                    quality_fail_reasons_json = %s
-                WHERE generation_id = %s
+                UPDATE "sticker_generation"
+                SET "qualityStatus" = 'fail',
+                    "qualityCheckedAt" = %s,
+                    "qualityCheckVersion" = %s,
+                    "qualityFailReasonsJson" = %s
+                WHERE "id" = %s
                 """,
                 (now_ts, QUALITY_CHECK_VERSION, fail_reasons_json, generation_id),
             )
@@ -154,12 +164,12 @@ def run_quality_classification(dry_run: bool = False) -> None:
 
     df_candidates = _extract_pending_qc_candidates()
 
-    window_spec = Window.partitionBy("user_id").orderBy("generation_id")
+    window_spec = Window.partitionBy("userId").orderBy(col("createdAt"), col("generationId"))
     df_filtered = (
         df_candidates.withColumn("user_sample_num", row_number().over(window_spec))
         .filter(col("user_sample_num") <= MAX_SAMPLES_PER_USER)
         .drop("user_sample_num")
-        .orderBy("generation_id")
+        .orderBy(col("createdAt"), col("generationId"))
     )
 
     candidate_rows = _as_dict_rows(df_filtered)
@@ -194,9 +204,9 @@ def run_quality_classification(dry_run: bool = False) -> None:
                 "run_id": run_id,
                 "checked_at": entry["checked_at"],
                 "quality_check_version": QUALITY_CHECK_VERSION,
-                "generation_id": row.get("generation_id"),
-                "user_id": row.get("user_id"),
-                "image_id": row.get("image_id"),
+                "generationId": row.get("generationId"),
+                "userId": row.get("userId"),
+                "assetId": row.get("assetId"),
                 "hard_fail_reasons_json": json.dumps(entry.get("hard_fail_reasons", []), sort_keys=True),
                 "soft_warn_reasons_json": json.dumps(entry.get("soft_warn_reasons", []), sort_keys=True),
                 "metrics_json": json.dumps(entry.get("metrics", {}), sort_keys=True),

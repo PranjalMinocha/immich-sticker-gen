@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir \
     pydantic==2.7.1 \
     timm==0.9.16 \
     "ray[serve,train]" \
-    boto3
+    boto3 \
+    mlflow
 
 RUN pip install --no-cache-dir --no-deps \
     git+https://github.com/ChaoningZhang/MobileSAM.git

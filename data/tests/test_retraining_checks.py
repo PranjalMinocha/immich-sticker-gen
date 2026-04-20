@@ -9,18 +9,21 @@ from retraining_checks import load_quality_config, should_block_batch, summarize
 
 
 class RetrainingChecksTests(unittest.TestCase):
+    def _valid_mask_rle(self):
+        return '{"size":[4,4],"counts":[0,16]}'
+
     def _valid_row(self, generation_id: int = 1):
         return {
-            "generation_id": generation_id,
-            "user_id": 101,
-            "image_id": 202,
+            "generationId": generation_id,
+            "userId": 101,
+            "assetId": 202,
             "bbox": "[10, 20, 30, 40]",
-            "point_coords": "[[20, 30]]",
-            "user_saved_mask": "RLE_ABC",
-            "edited_pixels": 100,
-            "num_tries": 2,
-            "processing_time_ms": 1200,
-            "generated_at": "2026-04-19T12:00:00Z",
+            "pointCoords": "[[20, 30]]",
+            "userSavedMask": self._valid_mask_rle(),
+            "editedPixels": 100,
+            "numTries": 2,
+            "processingTimeMs": 1200,
+            "createdAt": "2026-04-19T12:00:00Z",
         }
 
     def test_valid_row_passes(self):
@@ -41,18 +44,18 @@ class RetrainingChecksTests(unittest.TestCase):
         cfg = load_quality_config()
         row_a = self._valid_row(generation_id=100)
         row_b = self._valid_row(generation_id=100)
-        row_b["image_id"] = 999
+        row_b["assetId"] = 999
 
         validated = validate_rows([row_a, row_b], cfg)
         self.assertEqual(validated[0]["status"], "pass")
         self.assertEqual(validated[1]["status"], "hard_fail")
-        self.assertIn("duplicate_generation_id", validated[1]["hard_fail_reasons"])
+        self.assertIn("duplicate_generationId", validated[1]["hard_fail_reasons"])
 
     def test_summary_and_blocking(self):
         cfg = load_quality_config()
         good = self._valid_row(generation_id=1)
         bad = self._valid_row(generation_id=2)
-        bad["user_saved_mask"] = ""
+        bad["userSavedMask"] = ""
 
         validated = validate_rows([good, bad], cfg)
         summary = summarize_validation(validated)
@@ -70,6 +73,33 @@ class RetrainingChecksTests(unittest.TestCase):
         blocked, reasons = should_block_batch(summary, strict_cfg)
         self.assertTrue(blocked)
         self.assertTrue(reasons)
+
+    def test_invalid_mask_rle_is_hard_fail(self):
+        cfg = load_quality_config()
+        row = self._valid_row()
+        row["userSavedMask"] = "not-json"
+        validated = validate_rows([row], cfg)
+        self.assertEqual(validated[0]["status"], "hard_fail")
+        self.assertTrue(any(reason.startswith("invalid_user_saved_mask") for reason in validated[0]["hard_fail_reasons"]))
+
+    def test_soft_warn_rate_can_block_batch(self):
+        cfg = load_quality_config()
+        warn_row = self._valid_row(generation_id=10)
+        warn_row["editedPixels"] = cfg.max_edited_pixels_warn + 1
+        validated = validate_rows([warn_row], cfg)
+        summary = summarize_validation(validated)
+
+        strict_cfg = cfg.__class__(
+            max_edited_pixels_warn=cfg.max_edited_pixels_warn,
+            max_num_tries_warn=cfg.max_num_tries_warn,
+            max_processing_time_ms_warn=cfg.max_processing_time_ms_warn,
+            max_hard_fail_rate=cfg.max_hard_fail_rate,
+            max_soft_warn_rate=0.0,
+            min_accepted_batch_size=1,
+        )
+        blocked, reasons = should_block_batch(summary, strict_cfg)
+        self.assertTrue(blocked)
+        self.assertTrue(any("soft_warn_rate_exceeded" in reason for reason in reasons))
 
 
 if __name__ == "__main__":
