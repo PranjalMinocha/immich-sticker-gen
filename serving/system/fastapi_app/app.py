@@ -46,7 +46,10 @@ MODEL_RELOAD_TOKEN   = os.environ.get("MODEL_RELOAD_TOKEN", "")
 MLFLOW_TRACKING_URI  = os.environ.get("MLFLOW_TRACKING_URI", "")
 MODEL_REGISTRY_NAME  = os.environ.get("MODEL_REGISTRY_NAME", "immich-sticker-mobilesam")
 MODEL_REGISTRY_ALIAS = os.environ.get("MODEL_REGISTRY_ALIAS", "Production")
-BOOTSTRAP_MODEL_URI  = os.environ.get("BOOTSTRAP_MODEL_URI", "")
+BOOTSTRAP_MODEL_URI  = os.environ.get(
+    "BOOTSTRAP_MODEL_URI",
+    "mlflow-artifacts:/2/94d1e731c6f64307908d893c9b1476dc/artifacts/checkpoints/mobile_sam_full.pt",
+)
 S3_ENDPOINT          = os.environ.get("S3_ENDPOINT", "")
 S3_ACCESS_KEY        = os.environ.get("S3_ACCESS_KEY", "")
 S3_SECRET_KEY        = os.environ.get("S3_SECRET_KEY", "")

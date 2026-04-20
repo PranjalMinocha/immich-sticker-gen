@@ -38,7 +38,10 @@ TRAINING_DATA_TABLE = os.environ.get("TRAINING_DATA_TABLE", "lakehouse.ml_datase
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://129.114.27.60:8000")
 MODEL_REGISTRY_NAME = os.environ.get("MODEL_REGISTRY_NAME", "immich-sticker-mobilesam")
 MODEL_REGISTRY_ALIAS = os.environ.get("MODEL_REGISTRY_ALIAS", "Production")
-BOOTSTRAP_MODEL_URI = os.environ.get("BOOTSTRAP_MODEL_URI", "")
+BOOTSTRAP_MODEL_URI = os.environ.get(
+    "BOOTSTRAP_MODEL_URI",
+    "mlflow-artifacts:/2/94d1e731c6f64307908d893c9b1476dc/artifacts/checkpoints/mobile_sam_full.pt",
+)
 
 VAL_MANIFEST_S3_URI = os.environ.get("VAL_MANIFEST_S3_URI", "")
 DEPLOY_MODEL_AFTER_RETRAIN = os.environ.get("DEPLOY_MODEL_AFTER_RETRAIN", "false").lower() == "true"
