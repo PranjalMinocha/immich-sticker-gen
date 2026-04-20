@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir \
     timm==0.9.16 \
     "ray[serve,train]" \
     boto3 \
-    mlflow
+    mlflow \
+    prometheus_client==0.20.0
 
 RUN pip install --no-cache-dir --no-deps \
     git+https://github.com/ChaoningZhang/MobileSAM.git

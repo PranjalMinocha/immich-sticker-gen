@@ -17,6 +17,7 @@ from model_deployer import deploy_model_from_mlflow_run, ping_serving_reload
 from model_source_resolver import resolve_pretrained_model_source
 from retraining_result_validation import validate_training_result
 from retraining_trigger_logic import should_trigger_retraining
+from rollback_monitor import record_deploy
 
 
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "database")
@@ -273,6 +274,7 @@ def _deploy_model_if_enabled(training_result: Dict[str, Any]) -> tuple[bool, str
         serving_model_bucket=SERVING_MODEL_BUCKET,
         serving_model_key=SERVING_MODEL_KEY,
         local_dir=deploy_local_dir,
+        backup_model_key=os.environ.get("BACKUP_MODEL_KEY", SERVING_MODEL_KEY + ".backup"),
     )
 
     reload_ok, reload_detail = ping_serving_reload(SERVING_RELOAD_URL, SERVING_RELOAD_TOKEN or None)
@@ -481,6 +483,17 @@ def trigger_retraining(dry_run: bool = False) -> None:
                                 _mark_used_for_training(cur, selected_ids, retrain_run_id)
                                 status = "succeeded"
                                 print(f"Retraining succeeded and marked {len(selected_ids)} rows as usedForTraining.")
+                                if deployment_status == "succeeded":
+                                    try:
+                                        backup_key = os.environ.get(
+                                            "BACKUP_MODEL_KEY", SERVING_MODEL_KEY + ".backup"
+                                        )
+                                        record_deploy(
+                                            current_model_s3_key=SERVING_MODEL_KEY,
+                                            previous_model_s3_key=backup_key,
+                                        )
+                                    except Exception as exc:
+                                        print(f"[retraining_trigger] record_deploy failed (non-fatal): {exc}")
                         else:
                             status = "failed"
                             error_message = reason

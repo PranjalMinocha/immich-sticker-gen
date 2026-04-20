@@ -1,0 +1,186 @@
+{
+  "title": "Sticker-Gen MLOps",
+  "uid": "sticker-gen-mlops",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["sticker-gen", "mlops"],
+  "panels": [
+
+    { "type": "row", "title": "Data Pipeline", "id": 100, "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 101, "title": "Total Saved Stickers", "type": "stat",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE saved = TRUE",
+        "format": "table"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 102, "title": "Pending QC", "type": "stat",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE saved = TRUE AND \"usedForTraining\" = FALSE AND \"qualityStatus\" = 'pending'",
+        "format": "table"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 103, "title": "QC Pass Rate (all time)", "type": "gauge",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE \"qualityStatus\" = 'pass') / NULLIF(COUNT(*) FILTER (WHERE \"qualityStatus\" IN ('pass','fail')), 0), 1) AS value FROM sticker_generation",
+        "format": "table"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 104, "title": "Ready for Retraining", "type": "stat",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation sg JOIN \"user\" u ON sg.\"userId\" = u.id WHERE sg.saved = TRUE AND sg.\"usedForTraining\" = FALSE AND sg.\"qualityStatus\" = 'pass' AND u.\"mlTrainingOptIn\" = TRUE",
+        "format": "table"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 105, "title": "Sticker Saves per Day", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 6 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT DATE_TRUNC('day', \"createdAt\") AS time, COUNT(*) AS saves FROM sticker_generation WHERE saved = TRUE AND $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1",
+        "format": "time_series"
+      }]
+    },
+
+    {
+      "id": 106, "title": "QC Status Breakdown over Time", "type": "timeseries",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 6 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT DATE_TRUNC('day', \"qualityCheckedAt\") AS time, \"qualityStatus\" AS metric, COUNT(*) AS value FROM sticker_generation WHERE \"qualityCheckedAt\" IS NOT NULL AND $__timeFilter(\"qualityCheckedAt\") GROUP BY 1, 2 ORDER BY 1",
+        "format": "time_series"
+      }]
+    },
+
+    { "type": "row", "title": "Training Pipeline", "id": 200, "gridPos": { "x": 0, "y": 11, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 201, "title": "Rows Used for Training", "type": "stat",
+      "gridPos": { "x": 0, "y": 12, "w": 4, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE \"usedForTraining\" = TRUE",
+        "format": "table"
+      }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 202, "title": "Last Marked for Training", "type": "stat",
+      "gridPos": { "x": 4, "y": 12, "w": 8, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT MAX(\"usedForTrainingAt\") AS value FROM sticker_generation WHERE \"usedForTrainingAt\" IS NOT NULL",
+        "format": "table"
+      }],
+      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso" } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "id": 203, "title": "Training Runs per Rerun ID", "type": "table",
+      "gridPos": { "x": 0, "y": 16, "w": 16, "h": 6 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT \"retrainRunId\", COUNT(*) AS rows_used, MAX(\"usedForTrainingAt\") AS completed_at FROM sticker_generation WHERE \"usedForTraining\" = TRUE AND \"retrainRunId\" IS NOT NULL GROUP BY 1 ORDER BY 3 DESC LIMIT 10",
+        "format": "table"
+      }]
+    },
+
+    { "type": "row", "title": "Serving", "id": 300, "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 301, "title": "Request Rate (rps)", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 23, "w": 8, "h": 6 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum(rate(sticker_requests_total[2m]))",
+        "legendFormat": "req/s"
+      }]
+    },
+
+    {
+      "id": 302, "title": "Error Rate", "type": "timeseries",
+      "gridPos": { "x": 8, "y": 23, "w": 8, "h": 6 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{
+        "expr": "sum(rate(sticker_errors_total[2m])) / (sum(rate(sticker_requests_total[2m])) + 1e-9)",
+        "legendFormat": "error rate"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.02 },
+            { "color": "red", "value": 0.05 }
+          ]}
+        }
+      }
+    },
+
+    {
+      "id": 303, "title": "IoU Score Distribution", "type": "timeseries",
+      "gridPos": { "x": 16, "y": 23, "w": 8, "h": 6 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum(rate(sticker_iou_score_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.1, sum(rate(sticker_iou_score_bucket[5m])) by (le))", "legendFormat": "p10" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } }
+    },
+
+    {
+      "id": 304, "title": "Inference Latency (ms)", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 29, "w": 12, "h": 6 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_inference_ms_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.99, sum(rate(sticker_inference_ms_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+
+    {
+      "id": 305, "title": "editedPixels p75 (recent saves)", "type": "timeseries",
+      "gridPos": { "x": 12, "y": 29, "w": 12, "h": 6 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{
+        "rawSql": "SELECT DATE_TRUNC('hour', \"createdAt\") AS time, PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY \"editedPixels\") AS edit_p75 FROM sticker_generation WHERE saved = TRUE AND $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1",
+        "format": "time_series"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1000 }
+          ]}
+        }
+      }
+    }
+
+  ]
+}

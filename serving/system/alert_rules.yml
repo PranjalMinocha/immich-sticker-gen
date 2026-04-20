@@ -1,0 +1,33 @@
+groups:
+  - name: sticker_serving
+    interval: 1m
+    rules:
+      - alert: StickerHighErrorRate
+        expr: >
+          sum(rate(sticker_errors_total[10m])) /
+          (sum(rate(sticker_requests_total[10m])) + 1e-9) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Sticker serving error rate > 5%"
+
+      - alert: StickerIoUDrop
+        expr: >
+          (
+            histogram_quantile(0.5, sum(rate(sticker_iou_score_bucket[10m])) by (le))
+          ) < 0.70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sticker IoU median dropped below 0.70"
+
+      - alert: StickerHighLatency
+        expr: >
+          histogram_quantile(0.99, sum(rate(sticker_inference_ms_bucket[10m])) by (le)) > 2000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sticker inference p99 latency > 2 seconds"

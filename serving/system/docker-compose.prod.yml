@@ -1,22 +1,18 @@
 # serving/system/docker-compose.prod.yml
 # ─────────────────────────────────────────────────────────────────────────────
-# Simple prod setup: download checkpoint → serve with FastAPI + PyTorch
+# Production setup: FastAPI + PyTorch server + Prometheus + Grafana
 #
 # Startup:
-#   docker compose -f docker-compose.prod.yml up
+#   docker compose -f docker-compose.prod.yml up -d
 #
 # Endpoints:
-#   predict / health   http://localhost:8000
+#   predict / health   http://localhost:8004
+#   metrics (prom)     http://localhost:8004/metrics
+#   Prometheus         http://localhost:9090
+#   Grafana            http://localhost:3000  (admin / admin)
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
-  model-init:
-    image: python:3.10-slim
-    volumes:
-      - model_data:/data
-      - ./model-init.sh:/model-init.sh:ro
-    command: ["sh", "/model-init.sh"]
-
   server:
     build:
       context: ..
@@ -40,11 +36,51 @@ services:
       - model_data:/data
     environment:
       CKPT_PATH: /data/mobile_sam.pt
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://129.114.27.60:8000}
+      MODEL_REGISTRY_NAME: ${MODEL_REGISTRY_NAME:-immich-sticker-mobilesam}
+      MODEL_REGISTRY_ALIAS: ${MODEL_REGISTRY_ALIAS:-Production}
+      BOOTSTRAP_MODEL_URI: ${BOOTSTRAP_MODEL_URI:-}
+      PRETRAINED_MODEL_S3_URI: ${PRETRAINED_MODEL_S3_URI:-s3://objstore-proj28/models/production/mobile_sam.pt}
+      S3_ENDPOINT: ${S3_ENDPOINT:-https://chi.tacc.chameleoncloud.org:7480}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      MODEL_RELOAD_TOKEN: ${MODEL_RELOAD_TOKEN:-}
     ports:
       - "8004:8000"
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      POSTGRES_HOST: ${POSTGRES_HOST:-database}
+      POSTGRES_DB: ${POSTGRES_DB:-immich}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
     depends_on:
-      model-init:
-        condition: service_completed_successfully
+      - prometheus
 
 volumes:
   model_data:
+  prometheus_data:
+  grafana_data:

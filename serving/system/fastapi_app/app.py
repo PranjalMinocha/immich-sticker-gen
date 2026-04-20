@@ -22,11 +22,24 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from PIL import Image, ImageFile
 from pydantic import BaseModel
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+_REQUEST_COUNT   = Counter("sticker_requests_total",   "Total predict requests",            ["status"])
+_ERROR_COUNT     = Counter("sticker_errors_total",     "Total predict errors")
+_INFERENCE_MS    = Histogram("sticker_inference_ms",   "Total inference latency ms",
+                             buckets=[10, 25, 50, 100, 200, 500, 1000, 2000, 5000])
+_ENCODER_MS      = Histogram("sticker_encoder_ms",     "Image encoder latency ms",
+                             buckets=[5, 10, 25, 50, 100, 250, 500, 1000])
+_DECODER_MS      = Histogram("sticker_decoder_ms",     "Mask decoder latency ms",
+                             buckets=[1, 5, 10, 25, 50, 100, 250])
+_IOU_SCORE       = Histogram("sticker_iou_score",      "Predicted IoU score",
+                             buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0])
 
 CKPT_PATH            = os.environ.get("CKPT_PATH", "/data/mobile_sam.pt")
 MODEL_RELOAD_TOKEN   = os.environ.get("MODEL_RELOAD_TOKEN", "")
@@ -161,6 +174,8 @@ def predict(req: PredictRequest):
     import torch
 
     if not req.bbox and not req.point_coords:
+        _REQUEST_COUNT.labels(status="error").inc()
+        _ERROR_COUNT.inc()
         raise HTTPException(status_code=422, detail="Provide 'bbox' or 'point_coords'")
 
     t_total = time.perf_counter()
@@ -202,18 +217,32 @@ def predict(req: PredictRequest):
     buf  = io.BytesIO()
     Image.fromarray(mask.astype(np.uint8) * 255).save(buf, format="PNG")
 
+    total_ms   = (time.perf_counter() - t_total) * 1e3
+    iou_val    = float(iou[0, 0])
+
+    _REQUEST_COUNT.labels(status="success").inc()
+    _INFERENCE_MS.observe(total_ms)
+    _ENCODER_MS.observe(encoder_ms)
+    _DECODER_MS.observe(decoder_ms)
+    _IOU_SCORE.observe(iou_val)
+
     return PredictResponse(
         mask         = base64.b64encode(buf.getvalue()).decode(),
-        inference_ms = (time.perf_counter() - t_total) * 1e3,
+        inference_ms = total_ms,
         encoder_ms   = encoder_ms,
         decoder_ms   = decoder_ms,
-        iou_score    = float(iou[0, 0]),
+        iou_score    = iou_val,
     )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/admin/reload")

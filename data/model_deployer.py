@@ -16,6 +16,7 @@ def deploy_model_from_mlflow_run(
     serving_model_bucket: str,
     serving_model_key: str,
     local_dir: str,
+    backup_model_key: str | None = None,
 ) -> Dict[str, str]:
     from mlflow import artifacts as mlflow_artifacts
 
@@ -31,12 +32,25 @@ def deploy_model_from_mlflow_run(
         raise RuntimeError(f"Downloaded artifact is not a file: {downloaded_path}")
 
     target_bucket = serving_model_bucket or raw_bucket
+
+    # Save current production model as backup before overwriting.
+    if backup_model_key:
+        try:
+            s3_client.copy_object(
+                Bucket=target_bucket,
+                CopySource={"Bucket": target_bucket, "Key": serving_model_key},
+                Key=backup_model_key,
+            )
+        except Exception:
+            pass  # Production key may not exist yet on first deploy
+
     with downloaded_path.open("rb") as fp:
         s3_client.upload_fileobj(fp, target_bucket, serving_model_key)
 
     return {
         "artifact_uri": artifact_uri,
         "target_s3_uri": f"s3://{target_bucket}/{serving_model_key}",
+        "backup_s3_uri": f"s3://{target_bucket}/{backup_model_key}" if backup_model_key else "",
         "downloaded_path": str(downloaded_path),
     }
 
