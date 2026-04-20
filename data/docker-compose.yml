@@ -46,9 +46,34 @@ services:
       - "8000:8000"
     volumes:
       - ./dummy_api.py:/app/dummy_api.py
+      - ./live_drift.py:/app/live_drift.py
     command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       - postgres
+
+  # 7b. PROMETHEUS (Live metrics scraping)
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    depends_on:
+      - dummy-api
+
+  # 7c. GRAFANA (Dashboards)
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
 
   # 8. TRAFFIC GENERATOR (Simulating Users)
   traffic-generator:
@@ -86,5 +111,18 @@ services:
     depends_on:
       - postgres
 
+  # 11. DRIFT DETECTOR BUILD (Reference artifact generation)
+  build-drift-detector:
+    build: .
+    env_file: .env
+    volumes:
+      - ./build_live_drift_detector.py:/app/build_live_drift_detector.py
+      - ./live_drift.py:/app/live_drift.py
+    profiles: ["batch"]
+    command: ["python", "build_live_drift_detector.py"]
+    depends_on:
+      - postgres
+
 volumes:
   pg_data:
+  grafana_data:
