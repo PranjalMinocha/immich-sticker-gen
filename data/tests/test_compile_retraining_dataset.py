@@ -96,6 +96,43 @@ class CompileRetrainingDatasetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.compile_retraining_dataset(rows, "run_single")
 
+    def test_static_val_manifest_all_rows_go_to_train(self):
+        rows = []
+        for idx in range(3):
+            rows.append(
+                {
+                    "generationId": f"00000000-0000-0000-0000-10000000000{idx}",
+                    "bbox": "[10, 20, 30, 40]",
+                    "pointCoords": "[[20, 30]]",
+                    "userSavedMask": '{"size":[4,4],"counts":[0,16]}',
+                    "originalPath": f"user_uploads/img_{idx}.jpg",
+                }
+            )
+
+        static_val = f"s3://{self.bucket}/initial_splits/val_manifest.csv"
+        result = module.compile_retraining_dataset(rows, "run_static_val", static_val_manifest_s3_uri=static_val)
+
+        # All accepted rows go to train; val comes from the static URI
+        self.assertEqual(result.train_count, 3)
+        self.assertEqual(result.val_count, 0)
+        self.assertEqual(result.val_manifest_s3_uri, static_val)
+
+    def test_static_val_manifest_single_row_allowed(self):
+        rows = [
+            {
+                "generationId": "00000000-0000-0000-0000-200000000001",
+                "bbox": "[10, 20, 30, 40]",
+                "pointCoords": "[[20, 30]]",
+                "userSavedMask": '{"size":[4,4],"counts":[0,16]}',
+                "originalPath": "user_uploads/img_0.jpg",
+            }
+        ]
+        static_val = f"s3://{self.bucket}/initial_splits/val_manifest.csv"
+        # Should not raise even with a single row
+        result = module.compile_retraining_dataset(rows, "run_one_row", static_val_manifest_s3_uri=static_val)
+        self.assertEqual(result.train_count, 1)
+        self.assertEqual(result.val_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

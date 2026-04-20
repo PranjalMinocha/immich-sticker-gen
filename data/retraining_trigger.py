@@ -42,6 +42,13 @@ BOOTSTRAP_MODEL_URI = os.environ.get("BOOTSTRAP_MODEL_URI", "")
 
 VAL_MANIFEST_S3_URI = os.environ.get("VAL_MANIFEST_S3_URI", "")
 DEPLOY_MODEL_AFTER_RETRAIN = os.environ.get("DEPLOY_MODEL_AFTER_RETRAIN", "false").lower() == "true"
+
+# Docker-based training launch (used when TRAINING_DOCKER_IMAGE is set)
+TRAINING_DOCKER_IMAGE       = os.environ.get("TRAINING_DOCKER_IMAGE", "")
+TRAINING_BASE_CONFIG_PATH   = os.environ.get("TRAINING_BASE_CONFIG_PATH", "")
+OBJECT_STORE_MOUNT_PATH     = os.environ.get("OBJECT_STORE_MOUNT_PATH", os.path.expanduser("~/my_object_store"))
+TRAINING_NUM_WORKERS        = int(os.environ.get("TRAINING_NUM_WORKERS", "1"))
+TRAINING_DOCKER_EXTRA_ARGS  = os.environ.get("TRAINING_DOCKER_EXTRA_ARGS", "")
 MODEL_ARTIFACT_PATH = os.environ.get("MODEL_ARTIFACT_PATH", "checkpoints/mobile_sam_full.pt")
 SERVING_MODEL_BUCKET = os.environ.get("SERVING_MODEL_BUCKET", RAW_BUCKET)
 SERVING_MODEL_KEY = os.environ.get("SERVING_MODEL_KEY", "models/production/mobile_sam.pt")
@@ -227,6 +234,125 @@ def _resolve_pretrained_model_source_uri() -> tuple[str, str, str]:
     return resolved.source_uri, resolved.strategy, resolved.model_version or ""
 
 
+def _s3_uri_to_container_path(s3_uri: str, container_root: str = "/data") -> str:
+    """Convert s3://{RAW_BUCKET}/key → {container_root}/key."""
+    prefix = f"s3://{RAW_BUCKET}/"
+    if s3_uri.startswith(prefix):
+        return container_root.rstrip("/") + "/" + s3_uri[len(prefix):]
+    raise ValueError(f"S3 URI does not start with expected bucket prefix: {s3_uri}")
+
+
+def _download_pretrained_for_docker(pretrained_model_uri: str, dest_path: str) -> None:
+    """Download the pretrained model to dest_path for bind-mount into the container."""
+    import tempfile
+    if pretrained_model_uri.startswith("s3://"):
+        stripped = pretrained_model_uri[5:]
+        bucket, _, key = stripped.partition("/")
+        _s3_client().download_file(bucket, key, dest_path)
+    elif pretrained_model_uri.startswith(("models:/", "runs:/", "mlflow-artifacts:/")):
+        import mlflow.artifacts as mlflow_artifacts
+        tmp = tempfile.mkdtemp(prefix="pretrained_dl_")
+        downloaded = mlflow_artifacts.download_artifacts(
+            artifact_uri=pretrained_model_uri,
+            tracking_uri=MLFLOW_TRACKING_URI,
+            dst_path=tmp,
+        )
+        src = Path(downloaded)
+        if src.is_dir():
+            pts = list(src.rglob("*.pt"))
+            if not pts:
+                raise RuntimeError(f"No .pt file in downloaded artifact dir: {src}")
+            src = pts[0]
+        import shutil
+        shutil.move(str(src), dest_path)
+    else:
+        raise ValueError(f"Cannot download pretrained model from URI: {pretrained_model_uri}")
+
+
+def _build_docker_retrain_command(
+    retrain_run_id: str,
+    train_manifest_s3_uri: str,
+    val_manifest_s3_uri: str,
+    pretrained_model_uri: str,
+    result_json_path: str,
+) -> str:
+    """
+    Build a `docker run` command that launches the training container.
+
+    Layout inside the container:
+      /data   ← rclone FUSE mount (OBJECT_STORE_MOUNT_PATH) — all S3 data accessible here
+      /out    ← RETRAIN_RESULT_DIR bind-mount — result JSON written here
+      /config.yaml ← generated per-run YAML config
+    """
+    import tempfile, yaml  # yaml is always available in the training image
+
+    result_dir = str(RETRAIN_RESULT_DIR)
+    os.makedirs(result_dir, exist_ok=True)
+
+    # Convert S3 manifest URIs to container-local paths (via rclone mount at /data)
+    train_manifest_container = _s3_uri_to_container_path(train_manifest_s3_uri)
+    val_manifest_container   = _s3_uri_to_container_path(val_manifest_s3_uri)
+
+    # Download pretrained model to result_dir so it's accessible in the container
+    pretrained_local = os.path.join(result_dir, f"{retrain_run_id}_pretrained.pt")
+    _download_pretrained_for_docker(pretrained_model_uri, pretrained_local)
+
+    # Build per-run config by loading the base config and overriding run-specific fields
+    base_cfg: Dict[str, Any] = {}
+    if TRAINING_BASE_CONFIG_PATH and os.path.isfile(TRAINING_BASE_CONFIG_PATH):
+        with open(TRAINING_BASE_CONFIG_PATH, "r") as f:
+            base_cfg = yaml.safe_load(f) or {}
+
+    run_cfg = dict(base_cfg)
+    run_cfg.setdefault("training", {})
+    run_cfg["training"]["use_pretrained"] = True
+    run_cfg["training"]["pretrained_checkpoint_path"] = f"/out/{retrain_run_id}_pretrained.pt"
+    run_cfg.setdefault("data", {})
+    run_cfg["data"]["train_manifest_csv"] = train_manifest_container
+    run_cfg["data"]["val_manifest_csv"]   = val_manifest_container
+    run_cfg["data"]["objstore_local_root"] = "/data"
+    run_cfg.setdefault("mlflow", {})
+    run_cfg["mlflow"]["tracking_uri"] = MLFLOW_TRACKING_URI
+    run_cfg.setdefault("output", {})
+    run_cfg["output"]["dir"] = "/out"
+    if TRAINING_BASE_CONFIG_PATH:
+        run_cfg["mobilesam_root"] = base_cfg.get("mobilesam_root", "/app/MobileSAM")
+
+    config_path = os.path.join(result_dir, f"{retrain_run_id}_config.yaml")
+    with open(config_path, "w") as f:
+        yaml.safe_dump(run_cfg, f)
+
+    # result_json_path is on the host; inside the container it's at /out/<basename>
+    result_json_container = "/out/" + Path(result_json_path).name
+
+    env_args = " ".join([
+        f"-e MLFLOW_TRACKING_URI={shlex.quote(MLFLOW_TRACKING_URI)}",
+        f"-e S3_ENDPOINT={shlex.quote(S3_ENDPOINT or '')}",
+        f"-e S3_ACCESS_KEY={shlex.quote(S3_ACCESS_KEY or '')}",
+        f"-e S3_SECRET_KEY={shlex.quote(S3_SECRET_KEY or '')}",
+        f"-e RAW_BUCKET={shlex.quote(RAW_BUCKET or '')}",
+    ])
+
+    volume_args = " ".join([
+        f"-v {shlex.quote(os.path.abspath(OBJECT_STORE_MOUNT_PATH))}:/data:ro",
+        f"-v {shlex.quote(os.path.abspath(result_dir))}:/out",
+        f"-v {shlex.quote(os.path.abspath(config_path))}:/config.yaml:ro",
+    ])
+
+    gpu_arg = "--gpus all"
+    extra = TRAINING_DOCKER_EXTRA_ARGS.strip()
+
+    cmd = (
+        f"docker run --rm {gpu_arg} {volume_args} {env_args} {extra} "
+        f"{shlex.quote(TRAINING_DOCKER_IMAGE)} "
+        f"python train.py --config /config.yaml "
+        f"--num-workers {TRAINING_NUM_WORKERS} "
+        f"--run-id {shlex.quote(retrain_run_id)} "
+        f"--output-json {shlex.quote(result_json_container)}"
+    )
+    return cmd
+
+
 def _run_command(command: str, cwd: Optional[str] = None) -> bool:
     completed = subprocess.run(command, shell=True, check=False, cwd=cwd)
     return completed.returncode == 0
@@ -291,22 +417,34 @@ def _execute_retraining(
     metadata_s3_uri: str,
     pretrained_model_uri: str,
 ) -> tuple[bool, str, str, Dict[str, Any], str]:
-    command_template = RETRAIN_COMMAND.strip() or _default_retrain_command()
-    if not RETRAIN_COMMAND.strip():
-        if not command_template:
-            print("RETRAIN_COMMAND is not configured and no TRAINING_SCRIPT_PATH/TRAINING_CONFIG_PATH fallback is available.")
-            return False, "retraining_command_missing", "", {}, ""
-
     os.makedirs(RETRAIN_RESULT_DIR, exist_ok=True)
     result_json_path = Path(RETRAIN_RESULT_DIR) / f"{retrain_run_id}_result.json"
-    command = command_template.format(
-        retrain_run_id=retrain_run_id,
-        train_manifest_s3_uri=train_manifest_s3_uri,
-        val_manifest_s3_uri=val_manifest_s3_uri,
-        metadata_s3_uri=metadata_s3_uri,
-        pretrained_model_uri=pretrained_model_uri,
-        result_json_path=str(result_json_path),
-    )
+
+    if TRAINING_DOCKER_IMAGE:
+        try:
+            command = _build_docker_retrain_command(
+                retrain_run_id=retrain_run_id,
+                train_manifest_s3_uri=train_manifest_s3_uri,
+                val_manifest_s3_uri=val_manifest_s3_uri,
+                pretrained_model_uri=pretrained_model_uri,
+                result_json_path=str(result_json_path),
+            )
+        except Exception as exc:
+            return False, f"docker_command_build_failed:{exc}", str(result_json_path), {}, ""
+    else:
+        command_template = RETRAIN_COMMAND.strip() or _default_retrain_command()
+        if not command_template:
+            print("RETRAIN_COMMAND is not configured and TRAINING_DOCKER_IMAGE is not set.")
+            return False, "retraining_command_missing", "", {}, ""
+        command = command_template.format(
+            retrain_run_id=retrain_run_id,
+            train_manifest_s3_uri=train_manifest_s3_uri,
+            val_manifest_s3_uri=val_manifest_s3_uri,
+            metadata_s3_uri=metadata_s3_uri,
+            pretrained_model_uri=pretrained_model_uri,
+            result_json_path=str(result_json_path),
+        )
+
     print(f"Executing retraining command: {command}")
     success = _run_command(command, cwd=os.environ.get("TRAINING_WORKDIR"))
     if not success:
