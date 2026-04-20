@@ -13,8 +13,6 @@ from PIL import Image
 API_BASE_URL = "http://dummy-api:8000"
 
 ACTIVE_USERS = []
-# Tracks which (user_id, jpg_path) pairs have already been uploaded this run.
-_used_uploads: dict[str, set[str]] = {}
 
 # --- Chameleon S3 Setup ---
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
@@ -197,11 +195,10 @@ def _default_point_coords(annotation, bbox):
         return point_coords
     return [[bbox[0] + bbox[2] / 2.0, bbox[1] + bbox[3] / 2.0]]
 
-def process_file_pair(jpg_path, json_path, user: dict | None = None):
+def process_file_pair(jpg_path, json_path):
     global ACTIVE_USERS
 
-    if user is None:
-        user = random.choice(ACTIVE_USERS)
+    user = random.choice(ACTIVE_USERS)
     username = user.get('username') or user['email']
     user_id = user['user_id']
     print(f"\n[{username}] Synthetic user selected...")
@@ -316,29 +313,17 @@ def process_file_pair(jpg_path, json_path, user: dict | None = None):
             )
             resolve_res.raise_for_status()
 
-def _pick_user_for_image(jpg_path: str) -> dict | None:
-    """Return a random user who hasn't uploaded this image yet, or None."""
-    eligible = [u for u in ACTIVE_USERS if jpg_path not in _used_uploads.get(u["user_id"], set())]
-    return random.choice(eligible) if eligible else None
-
-
 if __name__ == "__main__":
     print("Starting Deep-Data Synthetic Generator...")
     time.sleep(5) # Wait for DB and API to boot
     ACTIVE_USERS = load_synthetic_users()
-
+    
     pairs = get_image_json_pairs()
     print(f"Found {len(pairs)} image/annotation pairs in the reservoir.")
-
+    
     # Loop through the files indefinitely to keep generating traffic
     while True:
         random.shuffle(pairs) # Shuffle so traffic looks organic
         for jpg_path, json_path in pairs:
-            user = _pick_user_for_image(jpg_path)
-            if user is None:
-                # Every active user has already uploaded this image; skip it.
-                print(f"[skip] All users have uploaded {jpg_path}, skipping.")
-                continue
-            _used_uploads.setdefault(user["user_id"], set()).add(jpg_path)
-            process_file_pair(jpg_path, json_path, user=user)
+            process_file_pair(jpg_path, json_path)
             time.sleep(random.uniform(1.0, 4.0)) # Wait before next user
