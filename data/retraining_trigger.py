@@ -39,6 +39,7 @@ MODEL_REGISTRY_NAME = os.environ.get("MODEL_REGISTRY_NAME", "immich-sticker-mobi
 MODEL_REGISTRY_ALIAS = os.environ.get("MODEL_REGISTRY_ALIAS", "Production")
 BOOTSTRAP_MODEL_URI = os.environ.get("BOOTSTRAP_MODEL_URI", "")
 
+VAL_MANIFEST_S3_URI = os.environ.get("VAL_MANIFEST_S3_URI", "")
 DEPLOY_MODEL_AFTER_RETRAIN = os.environ.get("DEPLOY_MODEL_AFTER_RETRAIN", "false").lower() == "true"
 MODEL_ARTIFACT_PATH = os.environ.get("MODEL_ARTIFACT_PATH", "checkpoints/mobile_sam_full.pt")
 SERVING_MODEL_BUCKET = os.environ.get("SERVING_MODEL_BUCKET", RAW_BUCKET)
@@ -384,7 +385,11 @@ def trigger_retraining(dry_run: bool = False) -> None:
                         status = "object_missing_abort"
                     else:
                         try:
-                            compiled = compile_retraining_dataset(selected_rows, retrain_run_id)
+                            compiled = compile_retraining_dataset(
+                                selected_rows,
+                                retrain_run_id,
+                                static_val_manifest_s3_uri=VAL_MANIFEST_S3_URI or None,
+                            )
                         except Exception as exc:
                             status = "dataset_compile_failed"
                             error_message = str(exc)

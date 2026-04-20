@@ -151,7 +151,11 @@ def _manifest_csv_bytes(rows: List[Dict[str, Any]]) -> bytes:
     return buff.getvalue().encode("utf-8")
 
 
-def compile_retraining_dataset(rows: List[Dict[str, Any]], retrain_run_id: str) -> CompiledRetrainingDataset:
+def compile_retraining_dataset(
+    rows: List[Dict[str, Any]],
+    retrain_run_id: str,
+    static_val_manifest_s3_uri: str | None = None,
+) -> CompiledRetrainingDataset:
     if not RAW_BUCKET:
         raise RuntimeError("RAW_BUCKET is required")
     if not rows:
@@ -203,12 +207,19 @@ def compile_retraining_dataset(rows: List[Dict[str, Any]], retrain_run_id: str) 
             }
         )
 
-    train_rows, val_rows = _split_rows_deterministic(accepted)
-
     train_manifest_key = f"{manifests_prefix}/train_manifest.csv"
-    val_manifest_key = f"{manifests_prefix}/val_manifest.csv"
-    s3_client.put_object(Bucket=RAW_BUCKET, Key=train_manifest_key, Body=_manifest_csv_bytes(train_rows), ContentType="text/csv")
-    s3_client.put_object(Bucket=RAW_BUCKET, Key=val_manifest_key, Body=_manifest_csv_bytes(val_rows), ContentType="text/csv")
+    if static_val_manifest_s3_uri:
+        # Retraining uses only new rows for training; validation stays on original dataset.
+        train_rows = accepted
+        val_rows = []
+        final_val_manifest_s3_uri = static_val_manifest_s3_uri
+        s3_client.put_object(Bucket=RAW_BUCKET, Key=train_manifest_key, Body=_manifest_csv_bytes(train_rows), ContentType="text/csv")
+    else:
+        train_rows, val_rows = _split_rows_deterministic(accepted)
+        val_manifest_key = f"{manifests_prefix}/val_manifest.csv"
+        s3_client.put_object(Bucket=RAW_BUCKET, Key=train_manifest_key, Body=_manifest_csv_bytes(train_rows), ContentType="text/csv")
+        s3_client.put_object(Bucket=RAW_BUCKET, Key=val_manifest_key, Body=_manifest_csv_bytes(val_rows), ContentType="text/csv")
+        final_val_manifest_s3_uri = f"s3://{RAW_BUCKET}/{val_manifest_key}"
 
     metadata = {
         "retrainRunId": retrain_run_id,
@@ -238,7 +249,7 @@ def compile_retraining_dataset(rows: List[Dict[str, Any]], retrain_run_id: str) 
         val_count=len(val_rows),
         skipped_count=len(skipped),
         train_manifest_s3_uri=f"s3://{RAW_BUCKET}/{train_manifest_key}",
-        val_manifest_s3_uri=f"s3://{RAW_BUCKET}/{val_manifest_key}",
+        val_manifest_s3_uri=final_val_manifest_s3_uri,
         metadata_s3_uri=f"s3://{RAW_BUCKET}/{metadata_key}",
         prefix=prefix,
         accepted_generation_ids=[row["generationId"] for row in accepted],
