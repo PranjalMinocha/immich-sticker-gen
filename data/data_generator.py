@@ -1,3 +1,4 @@
+import base64
 import csv
 import json
 import os
@@ -116,59 +117,18 @@ def _decode_annotation_mask(annotation, image_height, image_width):
     return np.asarray(decoded > 0, dtype=bool)
 
 
-def _decode_rle_mask(mask_rle):
-    payload = json.loads(mask_rle)
-    size = payload.get("size")
-    counts = payload.get("counts")
-    if not isinstance(size, list) or len(size) != 2:
-        raise ValueError("invalid rle size")
-    if not isinstance(counts, list):
-        raise ValueError("invalid rle counts")
-
-    height = int(size[0])
-    width = int(size[1])
-    flat_size = height * width
-    flat = np.zeros(flat_size, dtype=np.uint8)
-
-    idx = 0
-    value = 0
-    for raw_count in counts:
-        count = int(raw_count)
-        if count < 0:
-            raise ValueError("invalid negative rle count")
-        next_idx = idx + count
-        if next_idx > flat_size:
-            raise ValueError("rle count overflow")
-        if value == 1 and count > 0:
-            flat[idx:next_idx] = 1
-        idx = next_idx
-        value = 1 - value
-
-    if idx != flat_size:
-        raise ValueError("rle count total mismatch")
-
-    return flat.reshape((height, width), order="F").astype(bool)
+def _mask_to_png_b64(mask: np.ndarray) -> str:
+    """Encode a boolean 2D mask as a base64 PNG (grayscale)."""
+    img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-def _encode_uncompressed_rle(mask):
-    if mask.ndim != 2:
-        raise ValueError("mask must be 2D")
-
-    flattened = mask.astype(np.uint8).flatten(order="F")
-    counts = []
-    current_value = 0
-    run_length = 0
-
-    for pixel in flattened:
-        if int(pixel) == current_value:
-            run_length += 1
-        else:
-            counts.append(run_length)
-            run_length = 1
-            current_value = int(pixel)
-
-    counts.append(run_length)
-    return json.dumps({"size": [int(mask.shape[0]), int(mask.shape[1])], "counts": counts})
+def _png_b64_to_mask(b64: str) -> np.ndarray:
+    """Decode a base64 PNG into a boolean 2D mask."""
+    png_bytes = base64.b64decode(b64)
+    return np.array(Image.open(BytesIO(png_bytes)).convert("L")) > 127
 
 
 def _partition_total(total, parts):
@@ -261,10 +221,10 @@ def process_file_pair(jpg_path, json_path):
                 continue
 
             gen_id = generation_payload["generation_id"]
-            model_suggested_mask = generation_payload["ml_suggested_mask"]
+            model_mask_b64 = generation_payload["ml_suggested_mask"]
 
             try:
-                model_mask = _decode_rle_mask(model_suggested_mask)
+                model_mask = _png_b64_to_mask(model_mask_b64)
             except Exception as exc:
                 print(f"  -> [{username}] Skipping generation {gen_id} due to invalid model mask: {exc}")
                 continue
@@ -276,7 +236,7 @@ def process_file_pair(jpg_path, json_path):
                 continue
 
             total_edited_pixels = int(np.count_nonzero(np.logical_xor(gt_mask, model_mask)))
-            gt_mask_rle = _encode_uncompressed_rle(gt_mask)
+            gt_mask_b64 = _mask_to_png_b64(gt_mask)
             
             total_tries = random.choices([1, 2, 3, 4, 5], weights=[60, 20, 10, 5, 5])[0]
             
@@ -308,7 +268,7 @@ def process_file_pair(jpg_path, json_path):
                 data={
                     "generation_id": gen_id,
                     "saved": "true" if saved else "false",
-                    "user_saved_mask": gt_mask_rle,
+                    "user_saved_mask": gt_mask_b64,
                 },
                 timeout=60,
             )

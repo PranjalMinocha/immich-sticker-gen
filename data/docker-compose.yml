@@ -25,6 +25,9 @@ services:
     volumes:
       - ./dummy_api.py:/app/dummy_api.py
       - ./live_drift.py:/app/live_drift.py
+    networks:
+      - default
+      - immich_default
     command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
   # 4. PROMETHEUS (Live metrics scraping)
   prometheus:
@@ -56,6 +59,9 @@ services:
     env_file: .env
     volumes:
       - ./data_generator.py:/app/data_generator.py
+    networks:
+      - default
+      - immich_default
     command: ["python", "data_generator.py"]
     depends_on:
       - dummy-api
@@ -125,8 +131,16 @@ services:
     env_file: .env
     volumes:
       - ./seed_synthetic_users.py:/app/seed_synthetic_users.py
+    networks:
+      - default
+      - immich_default
     profiles: ["seed"]
     command: ["python", "seed_synthetic_users.py", "--opt-in-count", "5000", "--opt-out-count", "1000"]
 
 volumes:
   grafana_data:
+
+networks:
+  default:
+  immich_default:
+    external: true

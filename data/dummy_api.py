@@ -258,12 +258,13 @@ def _sanitize_bbox(bbox_data, image_width: int, image_height: int) -> tuple[int,
     return x1, y1, x2, y2
 
 
-def _render_sticker_png(image_bytes: bytes, mask_rle: str, bbox_data) -> bytes:
+def _render_sticker_png(image_bytes: bytes, mask_b64: str, bbox_data) -> bytes:
     image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     image_array = np.array(image)
     image_height, image_width = image_array.shape[:2]
 
-    mask = _rle_to_mask(mask_rle)
+    mask_png = base64.b64decode(mask_b64)
+    mask = np.array(Image.open(io.BytesIO(mask_png)).convert("L")) > 127
     if mask.shape != (image_height, image_width):
         raise ValueError(
             f"Mask shape {mask.shape} does not match image shape {(image_height, image_width)}"
@@ -301,14 +302,12 @@ def _generate_mask_from_serving(image_bytes: bytes, bbox_data, point_coords_data
     if "mask" not in body:
         raise HTTPException(status_code=502, detail="Serving response did not include 'mask'")
 
-    mask_png = base64.b64decode(body["mask"])
-    mask_array = np.array(Image.open(io.BytesIO(mask_png)).convert("L")) > 127
-    rle = _mask_to_rle(mask_array)
+    mask_b64 = body["mask"]
 
     inference_ms = body.get("inference_ms")
     if inference_ms is None:
-        return rle, elapsed_ms
-    return rle, int(inference_ms)
+        return mask_b64, elapsed_ms
+    return mask_b64, int(inference_ms)
 
 
 def _run_drift_check_async(feature_vector) -> None:
@@ -376,8 +375,6 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
     file_bytes = await file.read()
     file_size = len(file_bytes)
     checksum = hashlib.sha1(file_bytes).digest()
-    device_asset_id = uuid.uuid4().hex
-    device_id = "synthetic-generator"
     asset_uuid = str(uuid.uuid4())
     ext = os.path.splitext(file.filename)[1] or ".jpg"
     object_key = f"upload/{user_id}/{asset_uuid[:2]}/{asset_uuid[2:4]}/{asset_uuid}{ext}"
@@ -394,11 +391,11 @@ async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
         cur.execute(
             '''
             INSERT INTO "asset"
-            ("id", "deviceAssetId", "deviceId", "ownerId", "type", "originalPath", "fileCreatedAt", "fileModifiedAt", "checksum", "checksumAlgorithm", "originalFileName", "localDateTime", "visibility", "libraryId", "livePhotoVideoId", "isExternal")
-            VALUES (%s, %s, %s, %s, %s, %s, now(), now(), %s, %s, %s, now(), %s, NULL, NULL, false)
+            ("id", "ownerId", "type", "originalPath", "fileCreatedAt", "fileModifiedAt", "checksum", "checksumAlgorithm", "originalFileName", "localDateTime", "visibility", "libraryId", "livePhotoVideoId", "isExternal")
+            VALUES (%s, %s, %s, %s, now(), now(), %s, %s, %s, now(), %s, NULL, NULL, false)
             RETURNING "id";
             ''',
-            (asset_uuid, device_asset_id, device_id, user_id, "IMAGE", object_key, Binary(checksum), "sha1", file.filename, "timeline"),
+            (asset_uuid, user_id, "IMAGE", object_key, Binary(checksum), "sha1", file.filename, "timeline"),
         )
         asset_id = cur.fetchone()["id"]
     except UniqueViolation:
@@ -460,16 +457,17 @@ def generate_initial_sticker(
 
         img_obj = s3.get_object(Bucket=RAW_BUCKET, Key=asset_row["originalPath"])
         image_bytes = img_obj["Body"].read()
-        ml_suggested_mask, processing_ms = _generate_mask_from_serving(image_bytes, bbox_data, point_coords_data)
+        mask_b64, processing_ms = _generate_mask_from_serving(image_bytes, bbox_data, point_coords_data)
+        mask_bytes = base64.b64decode(mask_b64)
 
         cur.execute(
             """
             INSERT INTO sticker_generation
-            ("source", "assetId", "userId", "bbox", "pointCoords", "mlSuggestedMask", "processingTimeMs", "saved", "numTries", "editedPixels")
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, 1, 0)
+            ("assetId", "userId", "bbox", "pointCoords", "mlSuggestedMask", "mlSuggestedMaskData", "processingTimeMs", "saved", "numTries", "editedPixels")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, false, 1, 0)
             RETURNING "id";
             """,
-            ("synthetic", asset_id, user_id, json.dumps(bbox_data), json.dumps(point_coords_data), ml_suggested_mask, processing_ms),
+            (asset_id, user_id, json.dumps(bbox_data), json.dumps(point_coords_data), mask_b64, Binary(mask_bytes), processing_ms),
         )
         gen_id = cur.fetchone()["id"]
         conn.commit()
@@ -494,7 +492,7 @@ def generate_initial_sticker(
         if drift_detector is not None:
             drift_executor.submit(_run_drift_check_async, feature_vector)
 
-    return {"generation_id": gen_id, "ml_suggested_mask": ml_suggested_mask}
+    return {"generation_id": gen_id, "ml_suggested_mask": mask_b64}
 
 
 @app.put("/sticker/edit")
