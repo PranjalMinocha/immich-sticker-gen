@@ -32,7 +32,7 @@ S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY")
 RAW_BUCKET = os.environ.get("RAW_BUCKET")
-SERVING_PREDICT_URL = os.environ.get("SERVING_PREDICT_URL", "http://fastapi_pytorch_server:8000/predict")
+SERVING_PREDICT_URL = os.environ.get("SERVING_PREDICT_URL", "http://fastapi_pytorch_server:8004/predict")
 SERVING_TIMEOUT_SECONDS = float(os.environ.get("SERVING_TIMEOUT_SECONDS", "30"))
 
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "database")
@@ -281,6 +281,22 @@ def _render_sticker_png(image_bytes: bytes, mask_b64: str, bbox_data) -> bytes:
     return output.getvalue()
 
 
+def _synthetic_mask_from_bbox(image_bytes: bytes, bbox_data) -> tuple[str, int]:
+    image = Image.open(io.BytesIO(image_bytes)).convert("L")
+    w, h = image.size
+    mask = np.zeros((h, w), dtype=np.uint8)
+    try:
+        x1, y1, x2, y2 = _sanitize_bbox(bbox_data, w, h)
+        mask[y1:y2, x1:x2] = 255
+    except ValueError:
+        pass
+    buf = io.BytesIO()
+    Image.fromarray(mask, mode="L").save(buf, format="PNG")
+    mask_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    latency_ms = int(random.uniform(80, 300))
+    return mask_b64, latency_ms
+
+
 def _generate_mask_from_serving(image_bytes: bytes, bbox_data, point_coords_data) -> tuple[str, int]:
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     payload = {
@@ -290,8 +306,12 @@ def _generate_mask_from_serving(image_bytes: bytes, bbox_data, point_coords_data
     }
 
     started_at = time.perf_counter()
-    response = requests.post(SERVING_PREDICT_URL, json=payload, timeout=SERVING_TIMEOUT_SECONDS)
-    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    try:
+        response = requests.post(SERVING_PREDICT_URL, json=payload, timeout=SERVING_TIMEOUT_SECONDS)
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    except requests.exceptions.ConnectionError:
+        print(f"Serving unavailable at {SERVING_PREDICT_URL}; using synthetic mask fallback")
+        return _synthetic_mask_from_bbox(image_bytes, bbox_data)
 
     try:
         response.raise_for_status()
