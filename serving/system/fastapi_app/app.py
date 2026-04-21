@@ -25,9 +25,18 @@ import numpy as np
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from PIL import Image, ImageFile
 from pydantic import BaseModel
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import (
+    Counter, Histogram, CollectorRegistry, generate_latest,
+    CONTENT_TYPE_LATEST, multiprocess,
+)
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+# Create multiproc dir before prometheus_client instantiates any metric (mmap
+# files are opened at class-body evaluation time when the env var is set).
+_multiproc_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
+if _multiproc_dir:
+    Path(_multiproc_dir).mkdir(parents=True, exist_ok=True)
 
 # ── Prometheus metrics ────────────────────────────────────────────────────────
 _REQUEST_COUNT   = Counter("sticker_requests_total",   "Total predict requests",            ["status"])
@@ -245,7 +254,13 @@ def health():
 
 @app.get("/metrics")
 def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        data = generate_latest(registry)
+    else:
+        data = generate_latest()
+    return Response(data, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/admin/reload")

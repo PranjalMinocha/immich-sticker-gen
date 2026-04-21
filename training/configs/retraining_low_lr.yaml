@@ -6,7 +6,7 @@ training:
   use_pretrained: true
   pretrained_checkpoint_path: /home/cc/training_artifacts/mobile_sam.pt
 
-mobilesam_root: /home/cc/MobileSAM-pytorch/MobileSAM
+mobilesam_root: /mobilesam
 
 data:
   data_dir: /data/images

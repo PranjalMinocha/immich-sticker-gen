@@ -95,6 +95,9 @@ services:
     volumes:
       - ./batch_pipeline.py:/app/batch_pipeline.py
       - .:/app
+    networks:
+      - default
+      - immich_default
     profiles: ["auto"]
     command:
       - "bash"
@@ -110,6 +113,9 @@ services:
       - ./model_source_resolver.py:/app/model_source_resolver.py
       - ./model_deployer.py:/app/model_deployer.py
       - .:/app
+    networks:
+      - default
+      - immich_default
     profiles: ["auto"]
     command:
       - "bash"

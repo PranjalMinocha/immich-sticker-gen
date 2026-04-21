@@ -45,6 +45,7 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-}
       MODEL_RELOAD_TOKEN: ${MODEL_RELOAD_TOKEN:-}
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus_multiproc
     ports:
       - "8004:8000"
 
