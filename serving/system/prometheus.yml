@@ -11,7 +11,12 @@ alerting:
 scrape_configs:
   - job_name: sticker_serving
     static_configs:
-      - targets: ["fastapi_pytorch_server:8000"]
+      - targets: ["server:8000"]
+    metrics_path: /metrics
+
+  - job_name: sticker_dummy_api
+    static_configs:
+      - targets: ["172.17.0.1:8000"]
     metrics_path: /metrics
 
   - job_name: prometheus

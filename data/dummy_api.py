@@ -15,7 +15,7 @@ import psycopg2
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from PIL import Image
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2 import Binary
 from psycopg2.errors import UniqueViolation
@@ -120,6 +120,15 @@ DRIFT_FEATURE_ERRORS = Counter(
     "Total feature extraction failures for drift checks",
 )
 
+RETRAIN_READY_ROWS = Gauge(
+    "retrain_ready_rows",
+    "Sticker rows that passed QC and are ready for model retraining",
+)
+ROLLBACK_COUNT = Gauge(
+    "sticker_rollback_count",
+    "Total number of model rollbacks triggered (from rollback state file)",
+)
+
 
 def _initialize_drift_detector():
     if not ENABLE_DRIFT_MONITORING:
@@ -154,6 +163,46 @@ def _initialize_drift_detector():
 drift_detector = _initialize_drift_detector()
 drift_executor = ThreadPoolExecutor(max_workers=max(1, DRIFT_WORKERS))
 drift_lock = threading.Lock()
+
+RETRAIN_READY_REFRESH_SECONDS = int(os.environ.get("RETRAIN_READY_REFRESH_SECONDS", "60"))
+ROLLBACK_STATE_PATH = os.environ.get("ROLLBACK_STATE_PATH", "/tmp/sticker_rollback_state.json")
+
+
+def _refresh_retrain_metrics():
+    """Background thread: expose DB-derived retrain and rollback counts as Prometheus gauges."""
+    while True:
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM sticker_generation sg
+                JOIN "user" u ON sg."userId" = u."id"
+                WHERE sg."saved" = TRUE
+                  AND sg."usedForTraining" = FALSE
+                  AND u."mlTrainingOptIn" = TRUE
+                  AND sg."qualityStatus" = 'pass'
+                """
+            )
+            count = int(cur.fetchone()[0])
+            RETRAIN_READY_ROWS.set(count)
+            cur.close()
+            conn.close()
+        except Exception as exc:
+            print(f"[metrics] retrain_ready_rows refresh failed: {exc}")
+
+        try:
+            import json as _json
+            with open(ROLLBACK_STATE_PATH) as _f:
+                _state = _json.load(_f)
+            ROLLBACK_COUNT.set(int(_state.get("rollback_count", 0)))
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            ROLLBACK_COUNT.set(0)
+
+        time.sleep(RETRAIN_READY_REFRESH_SECONDS)
+
+
+threading.Thread(target=_refresh_retrain_metrics, daemon=True, name="metrics-refresh").start()
 
 
 def get_db_connection():
@@ -337,9 +386,14 @@ def _run_drift_check_async(feature_vector) -> None:
         with drift_lock:
             prediction = drift_detector.predict(feature_vector[0])
         payload = prediction.get("data", {}) if isinstance(prediction, dict) else {}
-        test_stat = float(payload.get("test_stat", 0.0))
+        # test_stat is a per-feature array (shape (1, n_features)); take the max finite value
+        raw_stat = payload.get("test_stat", None)
+        if raw_stat is not None:
+            arr = np.asarray(raw_stat, dtype=float).ravel()
+            finite = arr[np.isfinite(arr)]
+            if finite.size > 0:
+                DRIFT_TEST_STAT.observe(float(np.max(finite)))
         is_drift = int(payload.get("is_drift", 0))
-        DRIFT_TEST_STAT.observe(test_stat)
         if is_drift:
             DRIFT_EVENTS.inc()
     except Exception:

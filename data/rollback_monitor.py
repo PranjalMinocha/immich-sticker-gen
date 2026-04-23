@@ -50,6 +50,10 @@ SERVING_MODEL_BUCKET      = os.environ.get("SERVING_MODEL_BUCKET", "objstore-pro
 SERVING_MODEL_KEY         = os.environ.get("SERVING_MODEL_KEY", "models/production/mobile_sam.pt")
 BACKUP_MODEL_KEY          = os.environ.get("BACKUP_MODEL_KEY", "models/backup/mobile_sam.pt")
 
+MLFLOW_TRACKING_URI       = os.environ.get("MLFLOW_TRACKING_URI", "")
+MODEL_NAME                = os.environ.get("MODEL_NAME", "immich-sticker-mobilesam")
+MODEL_ARTIFACT_PATH       = os.environ.get("MODEL_ARTIFACT_PATH", "checkpoints/mobile_sam_full.pt")
+
 WARMUP_MINUTES            = int(os.environ.get("WARMUP_MINUTES", "30"))
 ERROR_RATE_THRESHOLD      = float(os.environ.get("ERROR_RATE_THRESHOLD", "0.05"))
 IOU_DROP_THRESHOLD        = float(os.environ.get("IOU_DROP_THRESHOLD", "0.15"))
@@ -195,6 +199,80 @@ def _ping_reload() -> tuple[bool, str]:
         return False, str(exc)
 
 
+# ── Force rollback ───────────────────────────────────────────────────────────
+
+def force_rollback(to_version: Optional[int] = None, reason: str = "manual") -> dict:
+    import tempfile
+    from mlflow.tracking import MlflowClient
+    from model_deployer import deploy_model_from_mlflow_run
+
+    if not MLFLOW_TRACKING_URI:
+        raise RuntimeError("MLFLOW_TRACKING_URI env var is required for force-rollback")
+
+    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+
+    try:
+        prod_mv = client.get_model_version_by_alias(MODEL_NAME, "Production")
+        current_version = int(prod_mv.version)
+    except Exception as exc:
+        raise RuntimeError(f"Could not resolve Production alias for '{MODEL_NAME}': {exc}")
+
+    target_version = to_version if to_version is not None else current_version - 1
+    if target_version < 1:
+        raise RuntimeError(
+            f"Cannot roll back: current Production is version {current_version} "
+            f"and there is no version {target_version}"
+        )
+    if target_version == current_version:
+        raise RuntimeError(f"Version {target_version} is already Production — nothing to do")
+
+    target_mv = client.get_model_version(MODEL_NAME, str(target_version))
+    run_id = target_mv.run_id
+    print(
+        f"[rollback_monitor] force-rollback: version {current_version} → {target_version} "
+        f"(run_id={run_id}, reason={reason!r})"
+    )
+
+    s3 = _s3_client()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        deploy_result = deploy_model_from_mlflow_run(
+            s3_client=s3,
+            raw_bucket=SERVING_MODEL_BUCKET,
+            tracking_uri=MLFLOW_TRACKING_URI,
+            run_id=run_id,
+            model_artifact_path=MODEL_ARTIFACT_PATH,
+            serving_model_bucket=SERVING_MODEL_BUCKET,
+            serving_model_key=SERVING_MODEL_KEY,
+            local_dir=tmpdir,
+            backup_model_key=BACKUP_MODEL_KEY,
+        )
+
+    reload_ok, reload_detail = _ping_reload()
+
+    client.set_registered_model_alias(MODEL_NAME, "Production", str(target_version))
+
+    state = _load_state()
+    state["deployed_at"] = _now_utc_iso()
+    state["current_model_s3_key"] = SERVING_MODEL_KEY
+    state["previous_model_s3_key"] = BACKUP_MODEL_KEY
+    state["rollback_count"] = state.get("rollback_count", 0) + 1
+    state["last_rollback_at"] = _now_utc_iso()
+    state["last_rollback_reasons"] = [reason]
+    _save_state(state)
+
+    result = {
+        "action": "force_rolled_back",
+        "from_version": current_version,
+        "to_version": target_version,
+        "run_id": run_id,
+        "reload_ok": reload_ok,
+        "reload_detail": reload_detail,
+        **deploy_result,
+    }
+    print(f"[rollback_monitor] force-rollback complete: {result}")
+    return result
+
+
 # ── Main check ────────────────────────────────────────────────────────────────
 
 def check_and_rollback(dry_run: bool = False) -> Dict[str, Any]:
@@ -328,6 +406,15 @@ def main() -> None:
     check_cmd = sub.add_parser("check", help="Run rollback check (default action)")
     check_cmd.add_argument("--dry-run", action="store_true")
 
+    force_cmd = sub.add_parser("force-rollback", help="Immediately roll back to a previous or specific model version")
+    force_cmd.add_argument(
+        "--to-version",
+        type=int,
+        default=None,
+        help="MLflow model version to roll back to (default: current Production version - 1)",
+    )
+    force_cmd.add_argument("--reason", default="manual", help="Reason recorded in the state file audit trail")
+
     record_cmd = sub.add_parser("record-deploy", help="Record a new deployment so the warmup clock resets")
     record_cmd.add_argument("--current-key",  required=True, help="S3 key of the newly deployed model")
     record_cmd.add_argument("--previous-key", required=True, help="S3 key of the previous model (for rollback)")
@@ -336,7 +423,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.cmd == "record-deploy":
+    if args.cmd == "force-rollback":
+        result = force_rollback(to_version=args.to_version, reason=args.reason)
+        print(json.dumps(result, indent=2))
+    elif args.cmd == "record-deploy":
         record_deploy(
             current_model_s3_key=args.current_key,
             previous_model_s3_key=args.previous_key,

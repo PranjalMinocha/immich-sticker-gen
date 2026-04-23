@@ -35,7 +35,7 @@ RETRAIN_RESULT_DIR = os.environ.get("RETRAIN_RESULT_DIR", "/tmp/retraining_resul
 RETRAIN_RUNS_TABLE = os.environ.get("RETRAIN_RUNS_TABLE", "lakehouse.ml_datasets.retraining_runs")
 TRAINING_DATA_TABLE = os.environ.get("TRAINING_DATA_TABLE", "lakehouse.ml_datasets.training_data")
 
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://129.114.27.60:8000")
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://129.114.26.4:8000")
 MODEL_REGISTRY_NAME = os.environ.get("MODEL_REGISTRY_NAME", "immich-sticker-mobilesam")
 MODEL_REGISTRY_ALIAS = os.environ.get("MODEL_REGISTRY_ALIAS", "Production")
 BOOTSTRAP_MODEL_URI = os.environ.get(
@@ -292,9 +292,60 @@ def _build_docker_retrain_command(
     result_dir = str(RETRAIN_RESULT_DIR)
     os.makedirs(result_dir, exist_ok=True)
 
-    # Convert S3 manifest URIs to container-local paths (via rclone mount at /data)
-    train_manifest_container = _s3_uri_to_container_path(train_manifest_s3_uri)
-    val_manifest_container   = _s3_uri_to_container_path(val_manifest_s3_uri)
+    # Download manifests and annotations locally — the rclone FUSE mount has a 5-min
+    # directory cache so newly uploaded files aren't visible yet via /data.
+    s3c = _s3_client()
+    def _dl_s3_uri(s3_uri: str, dest: str) -> None:
+        stripped = s3_uri[5:]
+        bucket, _, key = stripped.partition("/")
+        s3c.download_file(bucket, key, dest)
+
+    train_manifest_local = os.path.join(result_dir, f"{retrain_run_id}_train_manifest.csv")
+    val_manifest_local   = os.path.join(result_dir, f"{retrain_run_id}_val_manifest.csv")
+    _dl_s3_uri(train_manifest_s3_uri, train_manifest_local)
+    _dl_s3_uri(val_manifest_s3_uri,   val_manifest_local)
+
+    # Rewrite manifests to use local container paths (/images/, /annotations/) so the
+    # training container doesn't try to resolve S3 URIs through the rclone FUSE mount
+    # (which has a 5-min directory cache and won't see newly uploaded files).
+    import csv, io
+    def _rewrite_manifest_local(src_path: str, dest_path: str, run_id: str) -> None:
+        with open(src_path, newline="") as f:
+            rows = list(csv.DictReader(f))
+        with open(dest_path, "w", newline="") as out:
+            writer = csv.DictWriter(out, fieldnames=["image_uri", "annotation_uri"])
+            writer.writeheader()
+            for row in rows:
+                img_key = (row.get("image_uri") or "").split("/")[-1]
+                ann_key = (row.get("annotation_uri") or "").split("/")[-1]
+                writer.writerow({"image_uri": f"/images/{img_key}", "annotation_uri": f"/annotations/{ann_key}"})
+
+    rewritten_train = train_manifest_local.replace(".csv", "_local.csv")
+    rewritten_val   = val_manifest_local.replace(".csv", "_local.csv")
+    _rewrite_manifest_local(train_manifest_local, rewritten_train, retrain_run_id)
+    _rewrite_manifest_local(val_manifest_local,   rewritten_val,   retrain_run_id)
+
+    # Inside the training container these land in /out/
+    train_manifest_container = f"/out/{retrain_run_id}_train_manifest_local.csv"
+    val_manifest_container   = f"/out/{retrain_run_id}_val_manifest_local.csv"
+
+    # Download annotations and images locally — the rclone FUSE mount has a 5-min
+    # directory cache so newly uploaded files aren't visible yet.
+    paginator = s3c.get_paginator("list_objects_v2")
+
+    ann_local_dir = os.path.join(result_dir, f"{retrain_run_id}_annotations")
+    os.makedirs(ann_local_dir, exist_ok=True)
+    for page in paginator.paginate(Bucket=RAW_BUCKET, Prefix=f"retraining_runs/{retrain_run_id}/annotations/"):
+        for obj in page.get("Contents", []):
+            s3c.download_file(RAW_BUCKET, obj["Key"], os.path.join(ann_local_dir, obj["Key"].split("/")[-1]))
+    print(f"Downloaded {len(os.listdir(ann_local_dir))} annotation files")
+
+    img_local_dir = os.path.join(result_dir, f"{retrain_run_id}_images")
+    os.makedirs(img_local_dir, exist_ok=True)
+    for page in paginator.paginate(Bucket=RAW_BUCKET, Prefix=f"retraining_runs/{retrain_run_id}/images/"):
+        for obj in page.get("Contents", []):
+            s3c.download_file(RAW_BUCKET, obj["Key"], os.path.join(img_local_dir, obj["Key"].split("/")[-1]))
+    print(f"Downloaded {len(os.listdir(img_local_dir))} image files")
 
     # Download pretrained model to result_dir so it's accessible in the container
     pretrained_local = os.path.join(result_dir, f"{retrain_run_id}_pretrained.pt")
@@ -314,6 +365,14 @@ def _build_docker_retrain_command(
     run_cfg["data"]["train_manifest_csv"] = train_manifest_container
     run_cfg["data"]["val_manifest_csv"]   = val_manifest_container
     run_cfg["data"]["objstore_local_root"] = "/data"
+    run_cfg["data"]["annotation_root"] = "/annotations"
+    run_cfg["data"]["data_dir"] = "/images"
+    # Disable optional eval gates whose subset manifests may not exist at runtime
+    run_cfg.setdefault("offline_eval", {})
+    run_cfg["offline_eval"]["enable_small_object_gate"] = False
+    run_cfg["offline_eval"]["enable_low_light_gate"] = False
+    run_cfg["offline_eval"].pop("small_object_manifest_csv", None)
+    run_cfg["offline_eval"].pop("low_light_manifest_csv", None)
     run_cfg.setdefault("mlflow", {})
     run_cfg["mlflow"]["tracking_uri"] = MLFLOW_TRACKING_URI
     run_cfg.setdefault("output", {})
@@ -340,6 +399,8 @@ def _build_docker_retrain_command(
         f"-v {shlex.quote(os.path.abspath(OBJECT_STORE_MOUNT_PATH))}:/data:ro",
         f"-v {shlex.quote(os.path.abspath(result_dir))}:/out",
         f"-v {shlex.quote(os.path.abspath(config_path))}:/config.yaml:ro",
+        f"-v {shlex.quote(os.path.abspath(ann_local_dir))}:/annotations:ro",
+        f"-v {shlex.quote(os.path.abspath(img_local_dir))}:/images:ro",
     ])
 
     gpu_arg = "--gpus all"

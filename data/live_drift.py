@@ -53,13 +53,14 @@ def extract_request_features(bbox_raw: Any, point_coords_raw: Any) -> Optional[n
 
 
 def build_online_detector(x_ref: np.ndarray, ert: int = 300, window_size: int = 25):
-    from alibi_detect.cd import MMDDriftOnline
+    from alibi_detect.cd import CVMDriftOnline
 
-    return MMDDriftOnline(
+    # CVMDriftOnline uses the Cramér-von Mises statistic (scipy-based, no PyTorch needed).
+    # It monitors each feature independently; any drift across the feature set is flagged.
+    return CVMDriftOnline(
         x_ref,
         ert=ert,
-        window_size=window_size,
-        backend="pytorch",
+        window_sizes=[window_size],
     )
 
 

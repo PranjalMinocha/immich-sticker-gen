@@ -2,6 +2,7 @@ groups:
   - name: sticker_serving
     interval: 1m
     rules:
+      # ── Rollback triggers ──────────────────────────────────────────────────
       - alert: StickerHighErrorRate
         expr: >
           sum(rate(sticker_errors_total[10m])) /
@@ -9,25 +10,65 @@ groups:
         for: 2m
         labels:
           severity: critical
+          action: rollback
         annotations:
-          summary: "Sticker serving error rate > 5%"
+          summary: "Sticker error rate > 5% — rollback candidate"
+          description: "Error rate {{ $value | humanizePercentage }} over last 10 min"
 
       - alert: StickerIoUDrop
         expr: >
-          (
-            histogram_quantile(0.5, sum(rate(sticker_iou_score_bucket[10m])) by (le))
+          histogram_quantile(0.5,
+            sum(rate(sticker_iou_score_bucket[10m])) by (le)
           ) < 0.70
         for: 5m
         labels:
           severity: warning
+          action: rollback
         annotations:
           summary: "Sticker IoU median dropped below 0.70"
+          description: "IoU p50 = {{ $value | humanize }}"
 
       - alert: StickerHighLatency
         expr: >
-          histogram_quantile(0.99, sum(rate(sticker_inference_ms_bucket[10m])) by (le)) > 2000
+          histogram_quantile(0.99,
+            sum(rate(sticker_inference_ms_bucket[10m])) by (le)
+          ) > 2000
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Sticker inference p99 latency > 2 seconds"
+          summary: "Sticker inference p99 > 2 s"
+          description: "p99 latency = {{ $value | humanize }} ms"
+
+      # ── Retraining trigger ─────────────────────────────────────────────────
+      - alert: RetrainNeeded
+        expr: retrain_ready_rows >= 500
+        for: 0m
+        labels:
+          severity: info
+          action: retrain
+        annotations:
+          summary: "Enough data for retraining (>= 500 QC-passed rows)"
+          description: "{{ $value }} rows ready for training"
+
+      # ── Data drift ────────────────────────────────────────────────────────
+      - alert: DataDriftDetected
+        expr: increase(drift_events_total[30m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          action: investigate
+        annotations:
+          summary: "Input data drift detected in last 30 min"
+          description: "{{ $value }} drift events in 30 min window"
+
+      # ── Rollback event ────────────────────────────────────────────────────
+      - alert: ModelRollbackTriggered
+        expr: increase(sticker_rollback_count[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          action: notify
+        annotations:
+          summary: "Model rollback was triggered"
+          description: "Rollback count increased by {{ $value }} in last hour"
