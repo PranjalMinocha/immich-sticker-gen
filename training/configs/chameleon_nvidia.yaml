@@ -48,6 +48,15 @@ offline_eval:
   min_dice: 0.8
   min_iou: 0.7
   max_runtime_seconds: 14400
+  min_boundary_f1: 0.75
+  enable_boundary_gate: true
+  max_prompt_iou_drop: 0.15
+  min_prompt_robust_iou: 0.5
+  enable_prompt_robustness_gate: true
+  min_small_object_iou: 0.45
+  enable_small_object_gate: true
+  min_low_light_iou: 0.45
+  enable_low_light_gate: true
 
 output:
   dir: /out

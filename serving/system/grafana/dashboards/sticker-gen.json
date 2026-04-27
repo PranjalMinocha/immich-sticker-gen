@@ -2,183 +2,243 @@
   "title": "Sticker-Gen MLOps",
   "uid": "sticker-gen-mlops",
   "schemaVersion": 38,
-  "version": 1,
-  "refresh": "1m",
-  "time": { "from": "now-6h", "to": "now" },
+  "version": 2,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
   "tags": ["sticker-gen", "mlops"],
   "panels": [
 
-    { "type": "row", "title": "Data Pipeline", "id": 100, "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+    { "type": "row", "title": "Data Generation", "id": 100,
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
 
     {
-      "id": 101, "title": "Total Saved Stickers", "type": "stat",
-      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE saved = TRUE",
-        "format": "table"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-
-    {
-      "id": 102, "title": "Pending QC", "type": "stat",
-      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE saved = TRUE AND \"usedForTraining\" = FALSE AND \"qualityStatus\" = 'pending'",
-        "format": "table"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-
-    {
-      "id": 103, "title": "QC Pass Rate (all time)", "type": "gauge",
-      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE \"qualityStatus\" = 'pass') / NULLIF(COUNT(*) FILTER (WHERE \"qualityStatus\" IN ('pass','fail')), 0), 1) AS value FROM sticker_generation",
-        "format": "table"
-      }],
-      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-
-    {
-      "id": 104, "title": "Ready for Retraining", "type": "stat",
-      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation sg JOIN \"user\" u ON sg.\"userId\" = u.id WHERE sg.saved = TRUE AND sg.\"usedForTraining\" = FALSE AND sg.\"qualityStatus\" = 'pass' AND u.\"mlTrainingOptIn\" = TRUE",
-        "format": "table"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-
-    {
-      "id": 105, "title": "Sticker Saves per Day", "type": "timeseries",
-      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 6 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT DATE_TRUNC('day', \"createdAt\") AS time, COUNT(*) AS saves FROM sticker_generation WHERE saved = TRUE AND $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1",
-        "format": "time_series"
-      }]
-    },
-
-    {
-      "id": 106, "title": "QC Status Breakdown over Time", "type": "timeseries",
-      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 6 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT DATE_TRUNC('day', \"qualityCheckedAt\") AS time, \"qualityStatus\" AS metric, COUNT(*) AS value FROM sticker_generation WHERE \"qualityCheckedAt\" IS NOT NULL AND $__timeFilter(\"qualityCheckedAt\") GROUP BY 1, 2 ORDER BY 1",
-        "format": "time_series"
-      }]
-    },
-
-    { "type": "row", "title": "Training Pipeline", "id": 200, "gridPos": { "x": 0, "y": 11, "w": 24, "h": 1 }, "collapsed": false },
-
-    {
-      "id": 201, "title": "Rows Used for Training", "type": "stat",
-      "gridPos": { "x": 0, "y": 12, "w": 4, "h": 4 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE \"usedForTraining\" = TRUE",
-        "format": "table"
-      }],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-
-    {
-      "id": 202, "title": "Last Marked for Training", "type": "stat",
-      "gridPos": { "x": 4, "y": 12, "w": 8, "h": 4 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT MAX(\"usedForTrainingAt\") AS value FROM sticker_generation WHERE \"usedForTrainingAt\" IS NOT NULL",
-        "format": "table"
-      }],
-      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso" } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
-    },
-
-    {
-      "id": 203, "title": "Training Runs per Rerun ID", "type": "table",
-      "gridPos": { "x": 0, "y": 16, "w": 16, "h": 6 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT \"retrainRunId\", COUNT(*) AS rows_used, MAX(\"usedForTrainingAt\") AS completed_at FROM sticker_generation WHERE \"usedForTraining\" = TRUE AND \"retrainRunId\" IS NOT NULL GROUP BY 1 ORDER BY 3 DESC LIMIT 10",
-        "format": "table"
-      }]
-    },
-
-    { "type": "row", "title": "Serving", "id": 300, "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 }, "collapsed": false },
-
-    {
-      "id": 301, "title": "Request Rate (rps)", "type": "timeseries",
-      "gridPos": { "x": 0, "y": 23, "w": 8, "h": 6 },
+      "id": 101, "title": "Generate Requests", "type": "stat",
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 4 },
       "datasource": { "uid": "prometheus" },
-      "targets": [{
-        "expr": "sum(rate(sticker_requests_total[2m]))",
-        "legendFormat": "req/s"
-      }]
+      "targets": [{ "expr": "sum(sticker_generate_requests_total)", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "#3274D9", "mode": "fixed" }, "noValue": "0" } }
     },
 
     {
-      "id": 302, "title": "Error Rate", "type": "timeseries",
-      "gridPos": { "x": 8, "y": 23, "w": 8, "h": 6 },
+      "id": 102, "title": "Saved Stickers", "type": "stat",
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 4 },
       "datasource": { "uid": "prometheus" },
-      "targets": [{
-        "expr": "sum(rate(sticker_errors_total[2m])) / (sum(rate(sticker_requests_total[2m])) + 1e-9)",
-        "legendFormat": "error rate"
-      }],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 0.02 },
-            { "color": "red", "value": 0.05 }
-          ]}
-        }
-      }
+      "targets": [{ "expr": "sum(sticker_resolve_requests_total{saved=\"true\"})", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "#73BF69", "mode": "fixed" }, "noValue": "0" } }
     },
 
     {
-      "id": 303, "title": "IoU Score Distribution", "type": "timeseries",
-      "gridPos": { "x": 16, "y": 23, "w": 8, "h": 6 },
+      "id": 103, "title": "Discarded Stickers", "type": "stat",
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sum(sticker_resolve_requests_total{saved=\"false\"})", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "#FF780A", "mode": "fixed" }, "noValue": "0" } }
+    },
+
+    {
+      "id": 104, "title": "API Errors", "type": "stat",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sum(sticker_api_errors_total)", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "#F2495C", "mode": "fixed" }, "noValue": "0" } }
+    },
+
+    {
+      "id": 105, "title": "Request Rate (per min)", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 7 },
       "datasource": { "uid": "prometheus" },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum(rate(sticker_iou_score_bucket[5m])) by (le))", "legendFormat": "p50" },
-        { "expr": "histogram_quantile(0.1, sum(rate(sticker_iou_score_bucket[5m])) by (le))", "legendFormat": "p10" }
+        { "expr": "rate(sticker_generate_requests_total[2m]) * 60", "legendFormat": "Generate" },
+        { "expr": "rate(sticker_resolve_requests_total{saved=\"true\"}[2m]) * 60", "legendFormat": "Save" },
+        { "expr": "rate(sticker_edit_requests_total[2m]) * 60", "legendFormat": "Edit" }
       ],
-      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } }
+      "fieldConfig": { "defaults": { "unit": "short" } }
     },
 
     {
-      "id": 304, "title": "Inference Latency (ms)", "type": "timeseries",
-      "gridPos": { "x": 0, "y": 29, "w": 12, "h": 6 },
+      "id": 106, "title": "Edited Pixels (p50 / p95)", "type": "timeseries",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_edited_pixels_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(sticker_edited_pixels_bucket[5m])) by (le))", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    { "type": "row", "title": "Serving Performance", "id": 200,
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 201, "title": "Inference Latency (ms)", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 13, "w": 8, "h": 7 },
       "datasource": { "uid": "prometheus" },
       "targets": [
         { "expr": "histogram_quantile(0.50, sum(rate(sticker_inference_ms_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(sticker_inference_ms_bucket[5m])) by (le))", "legendFormat": "p95" },
         { "expr": "histogram_quantile(0.99, sum(rate(sticker_inference_ms_bucket[5m])) by (le))", "legendFormat": "p99" }
       ],
       "fieldConfig": { "defaults": { "unit": "ms" } }
     },
 
     {
-      "id": 305, "title": "editedPixels p75 (recent saves)", "type": "timeseries",
-      "gridPos": { "x": 12, "y": 29, "w": 12, "h": 6 },
-      "datasource": { "uid": "postgres" },
-      "targets": [{
-        "rawSql": "SELECT DATE_TRUNC('hour', \"createdAt\") AS time, PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY \"editedPixels\") AS edit_p75 FROM sticker_generation WHERE saved = TRUE AND $__timeFilter(\"createdAt\") GROUP BY 1 ORDER BY 1",
-        "format": "time_series"
-      }],
+      "id": 202, "title": "Encoder vs Decoder Latency (ms)", "type": "timeseries",
+      "gridPos": { "x": 8, "y": 13, "w": 8, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_encoder_ms_bucket[5m])) by (le))", "legendFormat": "Encoder p50" },
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_decoder_ms_bucket[5m])) by (le))", "legendFormat": "Decoder p50" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+
+    {
+      "id": 203, "title": "IoU Score Distribution", "type": "timeseries",
+      "gridPos": { "x": 16, "y": 13, "w": 8, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_iou_score_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.25, sum(rate(sticker_iou_score_bucket[5m])) by (le))", "legendFormat": "p25" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } }
+    },
+
+    { "type": "row", "title": "User Behaviour", "id": 300,
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 301, "title": "Number of Edit Tries", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 21, "w": 12, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_num_tries_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.75, sum(rate(sticker_num_tries_bucket[5m])) by (le))", "legendFormat": "p75" },
+        { "expr": "histogram_quantile(0.95, sum(rate(sticker_num_tries_bucket[5m])) by (le))", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    {
+      "id": 302, "title": "BBox Area Distribution", "type": "timeseries",
+      "gridPos": { "x": 12, "y": 21, "w": 12, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(sticker_bbox_area_bucket[5m])) by (le))", "legendFormat": "p50 area" },
+        { "expr": "histogram_quantile(0.95, sum(rate(sticker_bbox_area_bucket[5m])) by (le))", "legendFormat": "p95 area" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    { "type": "row", "title": "ML Pipeline", "id": 400,
+      "gridPos": { "x": 0, "y": 28, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 401, "title": "Ready for Retraining", "type": "stat",
+      "gridPos": { "x": 0, "y": 29, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "retrain_ready_rows", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": {
         "defaults": {
+          "noValue": "0",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null },
+            { "color": "green", "value": 500 }
+          ]},
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+
+    {
+      "id": 402, "title": "Rows Used for Training", "type": "stat",
+      "gridPos": { "x": 6, "y": 29, "w": 6, "h": 4 },
+      "datasource": { "uid": "postgres" },
+      "targets": [{ "rawSql": "SELECT COUNT(*) AS value FROM sticker_generation WHERE \"usedForTraining\" = TRUE", "format": "table" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "#8AB8FF", "mode": "fixed" }, "noValue": "0" } }
+    },
+
+    {
+      "id": 403, "title": "Rollback Count", "type": "stat",
+      "gridPos": { "x": 12, "y": 29, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sticker_rollback_count", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
           "thresholds": { "mode": "absolute", "steps": [
             { "color": "green", "value": null },
-            { "color": "red", "value": 1000 }
-          ]}
+            { "color": "red", "value": 1 }
+          ]},
+          "color": { "mode": "thresholds" }
         }
+      }
+    },
+
+    {
+      "id": 404, "title": "Error Rate", "type": "stat",
+      "gridPos": { "x": 18, "y": 29, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sum(rate(sticker_errors_total[10m])) / (sum(rate(sticker_requests_total[10m])) + 1e-9)", "legendFormat": "" }],
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "0%",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.02 },
+            { "color": "red", "value": 0.05 }
+          ]},
+          "color": { "mode": "thresholds" }
+        }
+      }
+    },
+
+    {
+      "id": 405, "title": "Drift Events", "type": "timeseries",
+      "gridPos": { "x": 0, "y": 33, "w": 12, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(drift_events_total[5m])", "legendFormat": "drift events (5m)" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } }
+    },
+
+    {
+      "id": 406, "title": "Drift Test Statistic", "type": "timeseries",
+      "gridPos": { "x": 12, "y": 33, "w": 12, "h": 7 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(drift_test_stat_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(drift_test_stat_bucket[5m])) by (le))", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+
+    { "type": "row", "title": "Alerts", "id": 500,
+      "gridPos": { "x": 0, "y": 40, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 501, "title": "Firing Alerts", "type": "alertlist",
+      "gridPos": { "x": 0, "y": 41, "w": 24, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "options": {
+        "alertInstanceLabelFilter": "",
+        "alertName": "",
+        "dashboardAlerts": false,
+        "groupBy": [],
+        "groupMode": "default",
+        "maxItems": 20,
+        "showRecentlyFired": true,
+        "sortOrder": 1,
+        "stateFilter": { "error": true, "firing": true, "noData": false, "normal": false, "pending": true }
       }
     }
 

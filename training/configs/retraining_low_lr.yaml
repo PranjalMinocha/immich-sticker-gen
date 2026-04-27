@@ -35,7 +35,7 @@ train:
   sam_instance_frac: 1.0
 
 mlflow:
-  tracking_uri: http://129.114.27.60:8000
+  tracking_uri: http://129.114.26.4:8000
   experiment_name: immich-sticker-retraining
   run_name: null
 
@@ -46,23 +46,23 @@ model_registry:
   production_alias: Production
 
 offline_eval:
-  min_dice: 0.75
-  min_iou: 0.65
+  min_dice: 0.8
+  min_iou: 0.7
   max_runtime_seconds: 10800
+  min_boundary_f1: 0.75
   enable_boundary_gate: true
-  min_boundary_f1: 0.5
-  enable_prompt_robustness_gate: true
   prompt_jitter_samples: 3
   prompt_jitter_frac: 0.1
   prompt_robust_max_batches: 100
   max_prompt_iou_drop: 0.15
   min_prompt_robust_iou: 0.5
-  enable_small_object_gate: true
+  enable_prompt_robustness_gate: true
   small_object_manifest_csv: /data/eval_subsets/small_objects_manifest.csv
   min_small_object_iou: 0.45
-  enable_low_light_gate: true
+  enable_small_object_gate: true
   low_light_manifest_csv: /data/eval_subsets/low_light_manifest.csv
   min_low_light_iou: 0.45
+  enable_low_light_gate: true
 
 output:
   dir: /out

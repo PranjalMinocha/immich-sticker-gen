@@ -115,15 +115,32 @@ def _validate_mask_rle(raw_mask: Any) -> Optional[str]:
     if raw_mask is None:
         return "missing_mask"
 
+    if not isinstance(raw_mask, (str, dict)):
+        return "invalid_type"
+
+    if isinstance(raw_mask, str) and not raw_mask.strip():
+        return "empty_mask"
+
+    # Accept base64-encoded PNG/image masks (stored directly from model output).
+    # These start with image magic bytes after decode, not with '{'.
+    if isinstance(raw_mask, str) and not raw_mask.strip().startswith("{"):
+        import base64 as _base64
+        try:
+            decoded = _base64.b64decode(raw_mask)
+            if len(decoded) < 8:
+                return "invalid_mask_too_short"
+            return None
+        except Exception:
+            return "invalid_base64"
+
+    # RLE JSON format: {"size": [h, w], "counts": [...]}
     if isinstance(raw_mask, str):
         try:
             payload = json.loads(raw_mask)
         except json.JSONDecodeError:
             return "invalid_json"
-    elif isinstance(raw_mask, dict):
-        payload = raw_mask
     else:
-        return "invalid_type"
+        payload = raw_mask
 
     if not isinstance(payload, dict):
         return "invalid_schema"

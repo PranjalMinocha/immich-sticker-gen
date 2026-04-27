@@ -13,11 +13,11 @@ datasources:
     type: postgres
     uid: postgres
     access: proxy
-    url: ${POSTGRES_HOST:-database}:5432
-    database: ${POSTGRES_DB:-immich}
-    user: ${POSTGRES_USER:-postgres}
+    url: $POSTGRES_HOST:5432
+    database: $POSTGRES_DB
+    user: $POSTGRES_USER
     secureJsonData:
-      password: ${POSTGRES_PASSWORD:-postgres}
+      password: $POSTGRES_PASSWORD
     jsonData:
       sslmode: disable
       postgresVersion: 1400

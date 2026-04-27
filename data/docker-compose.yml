@@ -6,6 +6,7 @@ services:
     volumes:
       - ./ingest_data.py:/app/ingest_data.py
     command: ["python", "ingest_data.py", "--url", "${INGEST_ARCHIVE_URL}"]
+
   # 2. DATA SPLITTING (Phase 1)
   split-data:
     build: .
@@ -25,35 +26,15 @@ services:
     volumes:
       - ./dummy_api.py:/app/dummy_api.py
       - ./live_drift.py:/app/live_drift.py
+      - /home/cc/.sticker_rollback_state.json:/rollback_state.json:ro
+    environment:
+      ROLLBACK_STATE_PATH: /rollback_state.json
     networks:
       - default
       - immich_default
     command: ["uvicorn", "dummy_api:app", "--host", "0.0.0.0", "--port", "8000"]
-  # 4. PROMETHEUS (Live metrics scraping)
-  prometheus:
-    image: prom/prometheus:v2.52.0
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    command: ["--config.file=/etc/prometheus/prometheus.yml"]
-    depends_on:
-      - dummy-api
 
-  # 5. GRAFANA (Dashboards)
-  grafana:
-    image: grafana/grafana-oss:10.4.2
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    volumes:
-      - grafana_data:/var/lib/grafana
-    depends_on:
-      - prometheus
-
-  # 6. TRAFFIC GENERATOR (Simulating Users)
+  # 4. TRAFFIC GENERATOR (Simulating Users)
   traffic-generator:
     build: .
     env_file: .env
@@ -65,35 +46,38 @@ services:
     command: ["python", "data_generator.py"]
     depends_on:
       - dummy-api
+    restart: on-failure
 
-  # 7. BATCH PIPELINE (The Lakehouse Compiler)
+  # 5. BATCH PIPELINE (The Lakehouse Compiler)
   batch-pipeline:
     build: .
     env_file: .env
     volumes:
       - ./batch_pipeline.py:/app/batch_pipeline.py
       - .:/app
-    # We use 'run' instead of 'up' for this, or leave it for manual triggers
-    profiles: ["batch"] 
+    profiles: ["batch"]
     command: ["python", "batch_pipeline.py"]
-  # 8. RETRAINING TRIGGER (Threshold-based retrain orchestrator)
+
+  # 6. RETRAINING TRIGGER (Threshold-based retrain orchestrator)
   retraining-trigger:
     build: .
     env_file: .env
     volumes:
-      - ./retraining_trigger.py:/app/retraining_trigger.py
-      - ./retraining_trigger_logic.py:/app/retraining_trigger_logic.py
-      - ./model_source_resolver.py:/app/model_source_resolver.py
-      - ./model_deployer.py:/app/model_deployer.py
       - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /tmp/retraining_results:/tmp/retraining_results
+      - /home/cc/my_object_store:/home/cc/my_object_store:ro
+      - /home/cc/MobileSAM-pytorch:/home/cc/MobileSAM-pytorch:ro
+      - /home/cc/immich-sticker-gen/training/configs:/home/cc/immich-sticker-gen/training/configs:ro
     profiles: ["batch"]
     command: ["python", "retraining_trigger.py", "--dry-run"]
 
+  # 7. QC SCHEDULER (runs batch_pipeline.py on interval)
   qc-scheduler:
     build: .
     env_file: .env
     volumes:
-      - ./batch_pipeline.py:/app/batch_pipeline.py
       - .:/app
     networks:
       - default
@@ -104,15 +88,18 @@ services:
       - "-lc"
       - "while true; do python batch_pipeline.py || true; sleep ${QC_INTERVAL_SECONDS:-300}; done"
 
+  # 8. RETRAINING SCHEDULER (runs retraining_trigger.py on interval)
   retraining-scheduler:
     build: .
     env_file: .env
     volumes:
-      - ./retraining_trigger.py:/app/retraining_trigger.py
-      - ./retraining_trigger_logic.py:/app/retraining_trigger_logic.py
-      - ./model_source_resolver.py:/app/model_source_resolver.py
-      - ./model_deployer.py:/app/model_deployer.py
       - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /tmp/retraining_results:/tmp/retraining_results
+      - /home/cc/my_object_store:/home/cc/my_object_store:ro
+      - /home/cc/MobileSAM-pytorch:/home/cc/MobileSAM-pytorch:ro
+      - /home/cc/immich-sticker-gen/training/configs:/home/cc/immich-sticker-gen/training/configs:ro
     networks:
       - default
       - immich_default
@@ -120,8 +107,48 @@ services:
     command:
       - "bash"
       - "-lc"
-      - "while true; do python retraining_trigger.py || true; sleep ${RETRAIN_TRIGGER_INTERVAL_SECONDS:-300}; done"
-  # 9. DRIFT DETECTOR BUILD (Reference artifact generation)
+      - "while true; do python retraining_trigger.py || true; sleep ${RETRAIN_TRIGGER_INTERVAL_SECONDS:-900}; done"
+
+  # 9. ROLLBACK MONITOR SCHEDULER (checks rollback conditions on interval)
+  rollback-scheduler:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+      - /home/cc/.sticker_rollback_state.json:/rollback_state.json
+    environment:
+      ROLLBACK_STATE_PATH: /rollback_state.json
+      PROMETHEUS_URL: http://172.17.0.1:9090
+    networks:
+      - default
+      - immich_default
+    profiles: ["auto"]
+    command:
+      - "bash"
+      - "-lc"
+      - "while true; do python rollback_monitor.py check || true; sleep ${ROLLBACK_INTERVAL_SECONDS:-300}; done"
+
+  # 10. FORCE ROLLBACK (manual one-shot rollback from host)
+  force-rollback:
+    build: .
+    env_file: .env
+    volumes:
+      - .:/app
+      - /home/cc/.sticker_rollback_state.json:/rollback_state.json
+    environment:
+      ROLLBACK_STATE_PATH: /rollback_state.json
+      PROMETHEUS_URL: http://immich_prometheus:9090
+      MLFLOW_TRACKING_URI: http://129.114.26.4:8000
+      SERVING_RELOAD_URL: http://server:8000/reload
+      SERVING_RELOAD_TOKEN: ${MODEL_RELOAD_TOKEN:-}
+    networks:
+      - default
+      - immich_default
+      - system_default
+    profiles: ["batch"]
+    command: ["python", "rollback_monitor.py", "force-rollback"]
+
+  # 11. DRIFT DETECTOR BUILD (Reference artifact generation — run once)
   build-drift-detector:
     build: .
     env_file: .env
@@ -131,7 +158,7 @@ services:
     profiles: ["batch"]
     command: ["python", "build_live_drift_detector.py"]
 
-  # 10. SYNTHETIC USER SEEDING (one-time helper)
+  # 11. SYNTHETIC USER SEEDING (one-time helper)
   seed-synthetic-users:
     build: .
     env_file: .env
@@ -143,10 +170,9 @@ services:
     profiles: ["seed"]
     command: ["python", "seed_synthetic_users.py", "--opt-in-count", "5000", "--opt-out-count", "1000"]
 
-volumes:
-  grafana_data:
-
 networks:
   default:
   immich_default:
+    external: true
+  system_default:
     external: true
