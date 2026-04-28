@@ -22,10 +22,11 @@ State file schema:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import psycopg2
 import requests
@@ -67,14 +68,26 @@ EDIT_PIXELS_SAMPLE_ROWS   = int(os.environ.get("EDIT_PIXELS_SAMPLE_ROWS", "200")
 def _load_state() -> Dict[str, Any]:
     try:
         with open(ROLLBACK_STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                return json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
     except FileNotFoundError:
         return {}
 
 
 def _save_state(state: Dict[str, Any]) -> None:
-    with open(ROLLBACK_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
+    # Open for read+write (create if missing), hold exclusive lock for the full write.
+    fd = os.open(ROLLBACK_STATE_PATH, os.O_RDWR | os.O_CREAT, 0o644)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            f.truncate()
+            json.dump(state, f, indent=2, sort_keys=True)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _now_utc_iso() -> str:
@@ -294,6 +307,12 @@ def check_and_rollback(dry_run: bool = False) -> Dict[str, Any]:
     current_iou  = _get_iou_median(METRICS_WINDOW_MINUTES)
     edit_p75     = _get_edit_pixels_p75(EDIT_PIXELS_SAMPLE_ROWS)
 
+    if error_rate is None and current_iou is None and edit_p75 is None:
+        print(
+            "[rollback_monitor] WARNING: all metric queries returned None — "
+            "cannot assess model health. Check Prometheus and Postgres connectivity."
+        )
+
     triggers: list[str] = []
 
     if error_rate is not None and error_rate > ERROR_RATE_THRESHOLD:
@@ -371,6 +390,19 @@ def check_and_rollback(dry_run: bool = False) -> Dict[str, Any]:
     return result
 
 
+def sample_baseline_metrics() -> Tuple[Optional[float], Optional[float]]:
+    """
+    Sample IoU median and editedPixels p75 from the CURRENT (pre-deploy) model.
+    Call this BEFORE deploying a new model so the baseline is not contaminated
+    by the new model's traffic.
+    Returns (baseline_iou_median, baseline_edit_pixels_p75).
+    """
+    iou = _get_iou_median(METRICS_WINDOW_MINUTES)
+    edit_p75 = _get_edit_pixels_p75(EDIT_PIXELS_SAMPLE_ROWS)
+    print(f"[rollback_monitor] Pre-deploy baseline sampled: iou={iou}, edit_pixels_p75={edit_p75}")
+    return iou, edit_p75
+
+
 def record_deploy(
     current_model_s3_key: str,
     previous_model_s3_key: str,
@@ -380,6 +412,8 @@ def record_deploy(
     """
     Call this immediately after a successful model deployment.
     Resets the warmup clock and records the baseline metrics.
+    Prefer passing pre-sampled baseline values (captured before deploy) rather
+    than letting this function sample them post-deploy.
     """
     if baseline_edit_pixels_p75 is None:
         baseline_edit_pixels_p75 = _get_edit_pixels_p75(EDIT_PIXELS_SAMPLE_ROWS)

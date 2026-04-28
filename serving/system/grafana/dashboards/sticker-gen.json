@@ -2,47 +2,66 @@
   "title": "Sticker-Gen MLOps",
   "uid": "sticker-gen-mlops",
   "schemaVersion": 38,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "time": { "from": "now-3h", "to": "now" },
   "tags": ["sticker-gen", "mlops"],
+  "templating": {
+    "list": [
+      {
+        "name": "time_window",
+        "type": "custom",
+        "label": "Time Window",
+        "query": "1h,6h,24h",
+        "current": { "text": "24h", "value": "24h" },
+        "options": [
+          { "text": "1h",  "value": "1h",  "selected": false },
+          { "text": "6h",  "value": "6h",  "selected": false },
+          { "text": "24h", "value": "24h", "selected": true  }
+        ],
+        "hide": 0,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
   "panels": [
 
     { "type": "row", "title": "Data Generation", "id": 100,
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
 
     {
-      "id": 101, "title": "Generate Requests", "type": "stat",
+      "id": 101, "title": "Generate Requests ($time_window)", "type": "stat",
       "gridPos": { "x": 0, "y": 1, "w": 6, "h": 4 },
       "datasource": { "uid": "prometheus" },
-      "targets": [{ "expr": "sum(sticker_generate_requests_total)", "legendFormat": "" }],
+      "targets": [{ "expr": "sum(increase(sticker_generate_requests_total[$time_window]))", "legendFormat": "" }],
       "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "color": { "fixedColor": "#3274D9", "mode": "fixed" }, "noValue": "0" } }
     },
 
     {
-      "id": 102, "title": "Saved Stickers", "type": "stat",
+      "id": 102, "title": "Saved Stickers ($time_window)", "type": "stat",
       "gridPos": { "x": 6, "y": 1, "w": 6, "h": 4 },
       "datasource": { "uid": "prometheus" },
-      "targets": [{ "expr": "sum(sticker_resolve_requests_total{saved=\"true\"})", "legendFormat": "" }],
+      "targets": [{ "expr": "sum(increase(sticker_resolve_requests_total{saved=\"true\"}[$time_window]))", "legendFormat": "" }],
       "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "color": { "fixedColor": "#73BF69", "mode": "fixed" }, "noValue": "0" } }
     },
 
     {
-      "id": 103, "title": "Discarded Stickers", "type": "stat",
+      "id": 103, "title": "Discarded Stickers ($time_window)", "type": "stat",
       "gridPos": { "x": 12, "y": 1, "w": 6, "h": 4 },
       "datasource": { "uid": "prometheus" },
-      "targets": [{ "expr": "sum(sticker_resolve_requests_total{saved=\"false\"})", "legendFormat": "" }],
+      "targets": [{ "expr": "sum(increase(sticker_resolve_requests_total{saved=\"false\"}[$time_window]))", "legendFormat": "" }],
       "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "color": { "fixedColor": "#FF780A", "mode": "fixed" }, "noValue": "0" } }
     },
 
     {
-      "id": 104, "title": "API Errors", "type": "stat",
+      "id": 104, "title": "API Errors ($time_window)", "type": "stat",
       "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 },
       "datasource": { "uid": "prometheus" },
-      "targets": [{ "expr": "sum(sticker_api_errors_total)", "legendFormat": "" }],
+      "targets": [{ "expr": "sum(increase(sticker_api_errors_total[$time_window]))", "legendFormat": "" }],
       "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": { "defaults": { "color": { "fixedColor": "#F2495C", "mode": "fixed" }, "noValue": "0" } }
     },

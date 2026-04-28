@@ -33,7 +33,9 @@ def deploy_model_from_mlflow_run(
 
     target_bucket = serving_model_bucket or raw_bucket
 
-    # Save current production model as backup before overwriting.
+    # Back up the current production model before overwriting.
+    # A failed backup blocks the deploy so we can always roll back.
+    backed_up = False
     if backup_model_key:
         try:
             s3_client.copy_object(
@@ -41,11 +43,37 @@ def deploy_model_from_mlflow_run(
                 CopySource={"Bucket": target_bucket, "Key": serving_model_key},
                 Key=backup_model_key,
             )
-        except Exception:
-            pass  # Production key may not exist yet on first deploy
+            # Verify the backup object actually landed.
+            s3_client.head_object(Bucket=target_bucket, Key=backup_model_key)
+            backed_up = True
+            print(f"[model_deployer] Backup written: s3://{target_bucket}/{backup_model_key}")
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            error_code = response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+            if error_code in ("NoSuchKey", "404", "NotFound") or "NoSuchKey" in str(exc):
+                # Source key absent — this is the very first deploy, no prior model to back up.
+                print("[model_deployer] No existing production model to back up (first deploy).")
+            else:
+                raise RuntimeError(f"Failed to back up production model before deploy: {exc}") from exc
 
-    with downloaded_path.open("rb") as fp:
-        s3_client.upload_fileobj(fp, target_bucket, serving_model_key)
+    # Upload the new model; restore backup if the upload fails.
+    try:
+        with downloaded_path.open("rb") as fp:
+            s3_client.upload_fileobj(fp, target_bucket, serving_model_key)
+    except Exception as upload_exc:
+        if backed_up:
+            print(f"[model_deployer] Upload failed ({upload_exc}); restoring backup.")
+            try:
+                s3_client.copy_object(
+                    Bucket=target_bucket,
+                    CopySource={"Bucket": target_bucket, "Key": backup_model_key},
+                    Key=serving_model_key,
+                )
+            except Exception as restore_exc:
+                raise RuntimeError(
+                    f"Upload failed AND backup restore failed: upload={upload_exc} restore={restore_exc}"
+                ) from restore_exc
+        raise RuntimeError(f"Model upload failed: {upload_exc}") from upload_exc
 
     return {
         "artifact_uri": artifact_uri,

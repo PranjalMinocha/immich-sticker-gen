@@ -39,11 +39,11 @@ class DataGeneratorLogicTests(unittest.TestCase):
         finally:
             module.random.setstate(rng_state)
 
-    def test_rle_decode_encode_round_trip(self):
+    def test_mask_png_b64_round_trip(self):
         mask = np.zeros((4, 5), dtype=bool)
         mask[1:3, 2:5] = True
-        rle = module._encode_uncompressed_rle(mask)
-        decoded = module._decode_rle_mask(rle)
+        b64 = module._mask_to_png_b64(mask)
+        decoded = module._png_b64_to_mask(b64)
         self.assertTrue(np.array_equal(mask, decoded))
 
     def test_partition_total_preserves_sum(self):

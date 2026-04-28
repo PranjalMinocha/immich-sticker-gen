@@ -61,8 +61,8 @@ services:
     image: minio/minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-immich}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-immich_minio_secret}
+      MINIO_ROOT_USER: ${LOCAL_MINIO_ACCESS_KEY:-immich}
+      MINIO_ROOT_PASSWORD: ${LOCAL_MINIO_SECRET_KEY:-immich_minio_secret}
     volumes:
       - minio_data:/data
     # minio_data is declared external below and maps to the original immich_minio-data
@@ -87,12 +87,12 @@ services:
       minio:
         condition: service_healthy
     environment:
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-immich}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-immich_minio_secret}
-      MINIO_BUCKET: ${MINIO_BUCKET:-immich}
+      LOCAL_MINIO_ACCESS_KEY: ${LOCAL_MINIO_ACCESS_KEY:-immich}
+      LOCAL_MINIO_SECRET_KEY: ${LOCAL_MINIO_SECRET_KEY:-immich_minio_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-objstore-proj28}
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY;
+        mc alias set local http://minio:9000 $$LOCAL_MINIO_ACCESS_KEY $$LOCAL_MINIO_SECRET_KEY;
         mc mb --ignore-existing local/$$MINIO_BUCKET;
         exit 0;
       "
@@ -105,19 +105,19 @@ services:
       minio-init:
         condition: service_completed_successfully
     environment:
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-immich}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-immich_minio_secret}
-      MINIO_BUCKET: ${MINIO_BUCKET:-immich}
+      LOCAL_MINIO_ACCESS_KEY: ${LOCAL_MINIO_ACCESS_KEY:-immich}
+      LOCAL_MINIO_SECRET_KEY: ${LOCAL_MINIO_SECRET_KEY:-immich_minio_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-objstore-proj28}
       CEPH_ENDPOINT: ${STICKER_S3_ENDPOINT:-https://chi.tacc.chameleoncloud.org:7480}
       CEPH_ACCESS_KEY: ${STICKER_S3_ACCESS_KEY:-}
       CEPH_SECRET_KEY: ${STICKER_S3_SECRET_KEY:-}
       CEPH_BUCKET: ${STICKER_S3_BUCKET:-objstore-proj28}
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
+        mc alias set local http://minio:9000 $$LOCAL_MINIO_ACCESS_KEY $$LOCAL_MINIO_SECRET_KEY &&
         mc alias set ceph $$CEPH_ENDPOINT $$CEPH_ACCESS_KEY $$CEPH_SECRET_KEY --insecure &&
         while true; do
-          mc mirror --insecure --exclude 'images/*' --exclude 'annotations/*' --exclude 'Raw-Data/*' --exclude 'Teacher-Embeddings/*' --exclude 'iceberg_warehouse/*' --exclude 'upload/*' --exclude 'user_uploads/*' --exclude 'https:/*' ceph/$$CEPH_BUCKET local/$$MINIO_BUCKET || true;
+          mc mirror --insecure --exclude 'images/*' --exclude 'annotations/*' --exclude 'Raw-Data/*' --exclude 'Teacher-Embeddings/*' --exclude 'iceberg_warehouse/*' --exclude 'user_uploads/*' --exclude 'https:/*' ceph/$$CEPH_BUCKET local/$$MINIO_BUCKET || true;
           sleep 60;
         done
       "
