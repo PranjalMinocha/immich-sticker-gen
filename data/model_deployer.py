@@ -48,8 +48,9 @@ def deploy_model_from_mlflow_run(
             backed_up = True
             print(f"[model_deployer] Backup written: s3://{target_bucket}/{backup_model_key}")
         except Exception as exc:
-            error_code = getattr(getattr(exc, "response", None), "get", lambda *a: None)("Error", {}).get("Code", "")
-            if error_code in ("NoSuchKey", "404") or "NoSuchKey" in str(exc):
+            response = getattr(exc, "response", None)
+            error_code = response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+            if error_code in ("NoSuchKey", "404", "NotFound") or "NoSuchKey" in str(exc):
                 # Source key absent — this is the very first deploy, no prior model to back up.
                 print("[model_deployer] No existing production model to back up (first deploy).")
             else:
