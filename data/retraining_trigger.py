@@ -17,7 +17,7 @@ from model_deployer import deploy_model_from_mlflow_run, ping_serving_reload
 from model_source_resolver import resolve_pretrained_model_source
 from retraining_result_validation import validate_training_result
 from retraining_trigger_logic import should_trigger_retraining
-from rollback_monitor import record_deploy
+from rollback_monitor import record_deploy, sample_baseline_metrics
 
 
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "database")
@@ -663,6 +663,10 @@ def trigger_retraining(dry_run: bool = False) -> None:
                                 result_key = f"retraining_runs/{retrain_run_id}/training_result.json"
                                 training_result_s3_uri = _upload_json_to_s3(result_key, training_result)
 
+                            # Sample baseline metrics from the CURRENT model before deploying
+                            # so the rollback thresholds are not contaminated by the new model.
+                            pre_deploy_iou, pre_deploy_edit_p75 = sample_baseline_metrics()
+
                             allow_mark = True
                             try:
                                 deployed, deployment_detail, deployed_model_s3_uri = _deploy_model_if_enabled(training_result)
@@ -686,6 +690,22 @@ def trigger_retraining(dry_run: bool = False) -> None:
                                 status = "succeeded"
                                 print(f"Retraining succeeded and marked {len(selected_ids)} rows as usedForTraining.")
                                 if deployment_status == "succeeded":
+                                    # Promote the new model version to the Production alias in MLflow
+                                    # so future retraining runs use it as the pretrained base.
+                                    if model_version and MLFLOW_TRACKING_URI:
+                                        try:
+                                            from mlflow.tracking import MlflowClient
+                                            mlflow_client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
+                                            mlflow_client.set_registered_model_alias(
+                                                MODEL_REGISTRY_NAME, MODEL_REGISTRY_ALIAS, model_version
+                                            )
+                                            print(
+                                                f"[retraining_trigger] MLflow alias '{MODEL_REGISTRY_ALIAS}' "
+                                                f"updated to version {model_version}."
+                                            )
+                                        except Exception as exc:
+                                            print(f"[retraining_trigger] MLflow alias update failed (non-fatal): {exc}")
+
                                     try:
                                         backup_key = os.environ.get(
                                             "BACKUP_MODEL_KEY", SERVING_MODEL_KEY + ".backup"
@@ -693,6 +713,8 @@ def trigger_retraining(dry_run: bool = False) -> None:
                                         record_deploy(
                                             current_model_s3_key=SERVING_MODEL_KEY,
                                             previous_model_s3_key=backup_key,
+                                            baseline_iou_median=pre_deploy_iou,
+                                            baseline_edit_pixels_p75=pre_deploy_edit_p75,
                                         )
                                     except Exception as exc:
                                         print(f"[retraining_trigger] record_deploy failed (non-fatal): {exc}")
