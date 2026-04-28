@@ -623,7 +623,7 @@ def resolve_sticker(
         try:
             cur.execute(
                 """
-                SELECT sg."bbox", sg."userId", sg."mlSuggestedMask", sg."userSavedMask", a."originalPath"
+                SELECT sg."assetId", sg."bbox", sg."userId", sg."mlSuggestedMask", sg."userSavedMask", a."originalPath"
                 FROM sticker_generation sg
                 JOIN "asset" a ON sg."assetId" = a."id"
                 WHERE sg."id" = %s;
@@ -653,7 +653,7 @@ def resolve_sticker(
                     raise
                 png_bytes = _render_sticker_png(image_bytes, fallback_mask, bbox_data)
 
-            s3_sticker_key = f"stickers/user_{row['userId']}/gen_{generation_id}.png"
+            s3_sticker_key = f"stickers/{row['assetId']}/{generation_id}/sticker.png"
             s3.put_object(Bucket=RAW_BUCKET, Key=s3_sticker_key, Body=png_bytes, ContentType="image/png")
             print(f"SUCCESS: Sticker saved to {s3_sticker_key}")
 
